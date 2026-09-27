@@ -49,7 +49,24 @@ Publishing a GitHub release builds the installers and attaches only these files:
 | macOS | `GeminiSpeechAPI-macos.dmg` |
 | Linux | `GeminiSpeechAPI-linux.tar.gz` |
 
-The Windows setup is per user and can start with Windows. On Linux, unpack the archive and run `GeminiSpeechAPI/GeminiSpeechAPI`. On macOS, open the app from the disk image.
+The Windows setup is per user and can start with Windows. On macOS, open the app from the disk image.
+
+On Linux (including CachyOS / Arch), unpack and run the installer:
+
+```bash
+tar -xzf GeminiSpeechAPI-linux.tar.gz
+./GeminiSpeechAPI/install.sh
+```
+
+That puts the app under `~/.local/share/GeminiSpeechAPI`, adds a desktop entry, and links `gemini-speech-api` into `~/.local/bin`. Uninstall with `~/.local/share/GeminiSpeechAPI/uninstall.sh`.
+
+For a system-wide Arch / CachyOS package after the release asset exists:
+
+```bash
+curl -LO https://raw.githubusercontent.com/ruwiss/gemini_speech/main/packaging/arch/PKGBUILD
+makepkg -si
+```
+
 
 The installed app checks GitHub a few seconds after it starts, and again every six hours. When a newer release is published, it downloads that installer and updates itself. A checkout started with `python -m gemini_speech` is left as it is.
 

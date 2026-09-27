@@ -83,6 +83,11 @@ def package_linux():
     folder = os.path.join(DIST, "GeminiSpeechAPI")
     if not os.path.isdir(folder):
         raise SystemExit("Linux app was not built")
+    for name in ("install.sh", "uninstall.sh"):
+        src = os.path.join(ROOT, "packaging", "linux", name)
+        dest = os.path.join(folder, name)
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o755)
     archive = os.path.join(DIST, "GeminiSpeechAPI-linux.tar.gz")
     if os.path.exists(archive):
         os.remove(archive)
@@ -93,6 +98,7 @@ def package_linux():
         "GeminiSpeechAPI",
     )
     print(archive)
+    print("On the target machine: tar -xzf GeminiSpeechAPI-linux.tar.gz && ./GeminiSpeechAPI/install.sh")
 
 
 def main():

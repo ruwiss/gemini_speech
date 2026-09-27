@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libegl1 libnss3
+          sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libegl1 libnss3 libx11-dev
           sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
 
       - name: Install Inno Setup

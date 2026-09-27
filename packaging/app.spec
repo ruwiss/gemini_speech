@@ -2,15 +2,21 @@
 import os
 import sys
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 ICON = os.path.join(ROOT, "assets", "icon.ico")
+
+hiddenimports = ["PyQt6.QtMultimedia"]
+if sys.platform != "win32":
+    hiddenimports += collect_submodules("pynput")
 
 a = Analysis(
     [os.path.join(ROOT, "launch.py")],
     pathex=[ROOT],
     binaries=[],
     datas=[(os.path.join(ROOT, "assets"), "assets")],
-    hiddenimports=["PyQt6.QtMultimedia"],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

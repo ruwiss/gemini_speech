@@ -1,10 +1,13 @@
 [project]
 name = "gemini-speech-api"
-version = "1.0.3"
+version = "1.0.8"
 description = "Tray dictation using Gemini 3.5 Transcribe Live."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["PyQt6>=6.6"]
+dependencies = [
+    "PyQt6>=6.6",
+    "pynput>=1.7.6; sys_platform != 'win32'",
+]
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.14"]
