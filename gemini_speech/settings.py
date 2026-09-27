@@ -1,10 +1,11 @@
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QVBoxLayout,
 )
 
+from . import __version__
 from . import hotkey
 from . import messages
 from . import paths
@@ -26,6 +27,19 @@ LANGUAGES = (
     ("Japanese", "ja"),
     ("Korean", "ko"),
 )
+
+
+class VersionLink(QLabel):
+    def __init__(self):
+        super().__init__(__version__)
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("github.com/ruwiss/gemini_speech")
+        self.setStyleSheet("color: #7d8490; font-size: 11px;")
+
+    def mousePressEvent(self, event):
+        QDesktopServices.openUrl(QUrl("https://github.com/ruwiss/gemini_speech"))
+        event.accept()
 
 
 class ShortcutField(QLineEdit):
@@ -158,6 +172,7 @@ class Settings(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #b7bcc8;")
         layout.addWidget(hint)
+        layout.addWidget(VersionLink())
 
     def set_values(self, api_key, shortcut, translate, language, cancel):
         self.api_key.setText(api_key)
