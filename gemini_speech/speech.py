@@ -166,21 +166,26 @@ class LiveSession:
 
     def _collect_final(self):
         started = _now()
-        deadline = started + 0.45
-        last = self._text()
+        deadline = started + 0.55
+        baseline = self._text()
+        last = baseline
         while _now() < deadline and not self._closing:
             self._drain(0.04)
+            if _now() - started < 0.2:
+                continue
             text = self._text()
-            if not text or text == last:
+            if text == last:
+                if text != baseline and _now() - started >= 0.28:
+                    return
                 continue
             last = text
-            extra = _now() + 0.12
-            while _now() < extra and _now() < deadline and not self._closing:
+            extra = _now() + 0.1
+            while _now() < extra and not self._closing:
                 self._drain(0.04)
                 newer = self._text()
                 if newer != last:
                     last = newer
-                    extra = _now() + 0.12
+                    extra = _now() + 0.1
             return
 
     def _drain(self, timeout):

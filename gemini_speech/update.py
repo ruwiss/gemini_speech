@@ -41,11 +41,17 @@ def download():
 
 def launch(path):
     if sys.platform == "win32":
+        script = os.path.join(tempfile.gettempdir(), "geminispeech-update.ps1")
+        open(script, "w", encoding="utf-8").write(
+            "Start-Sleep -Seconds 1\n"
+            "Start-Process -FilePath %s -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait\n"
+            "Start-Process -FilePath %s\n" % (_ps(path), _ps(sys.executable))
+        )
         subprocess.Popen(
-            [path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script],
             close_fds=True,
         )
-        return
+        os._exit(0)
     if sys.platform == "darwin":
         subprocess.Popen(["open", path], close_fds=True)
         return
@@ -90,6 +96,10 @@ def _parts(text):
                 break
         numbers.append(int(digits or 0))
     return tuple(numbers)
+
+
+def _ps(text):
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _quote(text):

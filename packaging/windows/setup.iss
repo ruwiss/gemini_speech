@@ -1,5 +1,5 @@
 #define AppName "GeminiSpeechAPI"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define SourceDir "..\..\dist\GeminiSpeechAPI"
 
 [Setup]
@@ -20,7 +20,7 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 CloseApplications=force
-RestartApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: startup; Description: "Start GeminiSpeechAPI when I sign in"
@@ -33,4 +33,4 @@ Name: "{group}\GeminiSpeechAPI"; Filename: "{app}\GeminiSpeechAPI.exe"
 Name: "{userstartup}\GeminiSpeechAPI"; Filename: "{app}\GeminiSpeechAPI.exe"; Tasks: startup
 
 [Run]
-Filename: "{app}\GeminiSpeechAPI.exe"; Description: "Launch GeminiSpeechAPI"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\GeminiSpeechAPI.exe"; Description: "Launch GeminiSpeechAPI"; Flags: nowait postinstall skipifsilent runasoriginaluser

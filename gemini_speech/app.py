@@ -12,7 +12,7 @@ from . import messages
 from . import paste
 from . import paths
 from . import speech
-from .audio import Recorder
+from .audio import Recorder, level
 from .settings import Settings
 
 
@@ -53,6 +53,9 @@ def _qt_log(mode, _context, message):
 
 def main():
     from PyQt6.QtCore import Qt, qInstallMessageHandler
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GeminiSpeech.GeminiSpeechAPI")
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL)
     qInstallMessageHandler(_qt_log)
     app = QApplication(sys.argv)
@@ -102,7 +105,9 @@ class GeminiSpeech(QObject):
 
     def start(self):
         self._arm_shortcut()
-        self.tray.show()
+        from .crashlog import note
+        note("tray shown")
+        QTimer.singleShot(0, self.tray.show)
         self.cancel_watch.start()
         self._sync_tip()
         self._ensure_warm()
@@ -230,9 +235,29 @@ class GeminiSpeech(QObject):
             return
         self._stopping = True
         self.busy = True
+        self._overlay("busy")
         self._finish_token += 1
         token = self._finish_token
-        QTimer.singleShot(0, lambda: self._finish_capture(token))
+        self.recorder.mark()
+        self._tail_quiet = 0
+        self._tail_started = __import__("time").monotonic()
+        QTimer.singleShot(40, lambda: self._watch_tail(token))
+
+    def _watch_tail(self, token):
+        if token != self._finish_token or self._quitting or not self.recorder.active:
+            return
+        elapsed = __import__("time").monotonic() - self._tail_started
+        tail = self.recorder.since_mark()
+        recent = tail[-int(0.08 * 32000):]
+        if level(recent) >= 400:
+            self._tail_quiet = 0
+        else:
+            self._tail_quiet += 40
+        # The last word can still be in the driver. Keep it if it arrives, then stop at the quiet.
+        if elapsed >= 0.7 or (elapsed >= 0.22 and self._tail_quiet >= 160):
+            self._finish_capture(token)
+            return
+        QTimer.singleShot(40, lambda: self._watch_tail(token))
 
     def _finish_capture(self, token):
         if token != self._finish_token or self._quitting:
@@ -246,7 +271,6 @@ class GeminiSpeech(QObject):
         if live is None:
             self.busy = False
             return
-        self._overlay("busy")
         job = _Finish(live)
         job.text_ready.connect(self._pasted, Qt.ConnectionType.QueuedConnection)
         job.failed.connect(self._transcribe_failed, Qt.ConnectionType.QueuedConnection)
