@@ -51,21 +51,51 @@ def _qt_log(mode, _context, message):
     note("qt %s: %s" % (mode, message))
 
 
+_INSTANCE_NAME = "Local\\GeminiSpeechAPI.single"
+_SHOW_NAME = "Local\\GeminiSpeechAPI.show"
 _INSTANCE_HANDLE = None
+_SHOW_HANDLE = None
 
 
-def _claim_single_instance():
-    global _INSTANCE_HANDLE
-    if sys.platform != "win32":
-        return True
+def _kernel32():
     import ctypes
     from ctypes import wintypes
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenEventW.restype = ctypes.c_void_p
+    kernel32.SetEvent.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    return kernel32
+
+
+def _claim_single_instance():
+    global _INSTANCE_HANDLE, _SHOW_HANDLE
+    if sys.platform != "win32":
+        return True
+    kernel32 = _kernel32()
     kernel32.SetLastError(0)
-    _INSTANCE_HANDLE = kernel32.CreateMutexW(None, False, "Local\\GeminiSpeechAPI.single")
-    return kernel32.GetLastError() != 183
+    _INSTANCE_HANDLE = kernel32.CreateMutexW(None, False, _INSTANCE_NAME)
+    if kernel32.GetLastError() == 183:
+        # The tray app has no window, so a second launch opens Settings in the first.
+        event = kernel32.OpenEventW(0x0002, False, _SHOW_NAME)
+        if event:
+            kernel32.SetEvent(event)
+            kernel32.CloseHandle(event)
+        return False
+    _SHOW_HANDLE = kernel32.CreateEventW(None, False, False, _SHOW_NAME)
+    return True
+
+
+def _show_requested():
+    if not _SHOW_HANDLE:
+        return False
+    return _kernel32().WaitForSingleObject(_SHOW_HANDLE, 0) == 0
 
 
 def main():
@@ -74,20 +104,14 @@ def main():
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GeminiSpeech.GeminiSpeechAPI")
     if not _claim_single_instance():
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(
-                None,
-                "GeminiSpeechAPI is already running.",
-                "GeminiSpeechAPI",
-                0x40040,
-            )
         return
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL)
     qInstallMessageHandler(_qt_log)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    GeminiSpeech().start()
+    # Held here: the garbage collector otherwise frees it, taking the tray and timers.
+    tray_app = GeminiSpeech()
+    tray_app.start()
     app.exec()
     os._exit(0)
 
@@ -330,6 +354,8 @@ class GeminiSpeech(QObject):
         self._overlay("error", message)
 
     def _watch_cancel(self):
+        if _show_requested() and not (self.recorder.active or self.busy):
+            self.show_settings()
         error = self.keys.take_error()
         if error:
             self._fail(error)
