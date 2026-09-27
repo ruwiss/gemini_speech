@@ -1,8 +1,10 @@
+import ctypes
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 from . import __version__
@@ -35,6 +37,10 @@ def download():
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         data = response.read()
+    if sys.platform == "win32" and not data.startswith(b"MZ"):
+        return ""
+    if len(data) < 1000000:
+        return ""
     open(target, "wb").write(data)
     return target
 
@@ -42,15 +48,22 @@ def download():
 def launch(path):
     if sys.platform == "win32":
         script = os.path.join(tempfile.gettempdir(), "geminispeech-update.ps1")
+        log = os.path.join(tempfile.gettempdir(), "geminispeech-update.log")
         open(script, "w", encoding="utf-8").write(
+            "$log = %s\n"
+            "function Note($m) { Add-Content -Path $log -Value $m }\n"
+            "Note \"start $(Get-Date -Format o)\"\n"
             "Start-Sleep -Seconds 1\n"
-            "Start-Process -FilePath %s -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait\n"
-            "Start-Process -FilePath %s\n" % (_ps(path), _ps(sys.executable))
+            "$setup = Start-Process -FilePath %s -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru\n"
+            "Note \"setup $($setup.ExitCode)\"\n"
+            "Start-Process -FilePath %s\n"
+            "Note \"launched\"\n" % (_ps(log), _ps(path), _ps(sys.executable))
         )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script],
-            close_fds=True,
-        )
+        args = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File %s' % _ps(script)
+        started = ctypes.windll.shell32.ShellExecuteW(None, "open", "powershell.exe", args, None, 0)
+        if started <= 32:
+            return
+        time.sleep(0.6)
         os._exit(0)
     if sys.platform == "darwin":
         subprocess.Popen(["open", path], close_fds=True)
@@ -76,7 +89,7 @@ def _latest():
     for item in body.get("assets") or []:
         assets.append({
             "name": item.get("name") or "",
-            "url": item.get("url") or "",
+            "url": item.get("browser_download_url") or "",
         })
     return {"tag": body.get("tag_name") or "", "assets": assets}
 
