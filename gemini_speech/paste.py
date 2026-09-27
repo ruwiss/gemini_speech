@@ -9,6 +9,9 @@ def paste_text(text):
     text = (text or "").strip()
     if not text:
         return False
+    if sys.platform.startswith("linux"):
+        from . import desktop
+        return desktop.paste(text)
     QGuiApplication.clipboard().setText(text)
     QTimer.singleShot(40, _press)
     return True
@@ -29,12 +32,3 @@ def _press():
             'tell application "System Events" to keystroke "v" using command down',
         ])
         return
-    for cmd in (
-        ["wtype", "-M", "ctrl", "v", "-m", "ctrl"],
-        ["xdotool", "key", "ctrl+v"],
-    ):
-        try:
-            subprocess.Popen(cmd)
-            return
-        except FileNotFoundError:
-            continue

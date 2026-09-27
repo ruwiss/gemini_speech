@@ -4,6 +4,8 @@ from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics
 from PyQt6.QtWidgets import QWidget, QApplication
 
+from . import desktop
+
 ICON = 28
 GAP = 8
 REC = QColor(240, 78, 82)
@@ -19,13 +21,17 @@ class Indicator(QWidget):
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
             | Qt.WindowType.WindowTransparentForInput
         )
+        if not desktop.wayland():
+            flags |= Qt.WindowType.Tool
         self.setWindowFlags(flags)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWindowTitle(desktop.OVERLAY_TITLE)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.resize(ICON, ICON)
         self._state = ""
         self._message = ""
@@ -59,6 +65,7 @@ class Indicator(QWidget):
         self._hide.stop()
         self._state = ""
         self.hide()
+        desktop.overlay_hidden()
 
     def _show(self, state, message, width, height, msec=0):
         self._state = state
@@ -75,6 +82,8 @@ class Indicator(QWidget):
         self.update()
 
     def _place(self):
+        if desktop.place(self):
+            return
         pos = QCursor.pos()
         x = pos.x() + GAP
         y = pos.y() - self.height() // 2

@@ -6,6 +6,7 @@ from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from . import desktop
 from . import hotkey
 from . import indicator
 from . import messages
@@ -109,6 +110,8 @@ def main():
     qInstallMessageHandler(_qt_log)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("gemini-speech-api")
     # Held here: the garbage collector otherwise frees it, taking the tray and timers.
     tray_app = GeminiSpeech()
     tray_app.start()
@@ -156,6 +159,7 @@ class GeminiSpeech(QObject):
         self.cancel_watch.timeout.connect(self._watch_cancel)
 
     def start(self):
+        desktop.start()
         self._arm_shortcut()
         from .crashlog import note
         note("tray shown")
@@ -263,6 +267,7 @@ class GeminiSpeech(QObject):
             self.show_settings()
             return
         try:
+            desktop.remember_focus()
             note("opening live session")
             if mode == "translate":
                 self._live = speech.LiveSession(self.api_key, self.language)
@@ -341,12 +346,14 @@ class GeminiSpeech(QObject):
             live.cancel()
 
     def _pasted(self, text):
-        self.busy = False
         self._ensure_warm()
-        if not paste.paste_text(text):
+        if not (text or "").strip():
             self._overlay("error", messages.NO_SPEECH)
-            return
-        self._overlay("done")
+        elif paste.paste_text(text):
+            self._overlay("done")
+        else:
+            self._overlay("error", messages.PASTE_FAILED)
+        self.busy = False
 
     def _transcribe_failed(self, message):
         self.busy = False
@@ -400,6 +407,7 @@ class GeminiSpeech(QObject):
         timer = getattr(self, "_update_timer", None)
         if timer is not None:
             timer.stop()
+        desktop.stop()
         self.indicator.dismiss()
         self.settings.hide()
         self.tray.hide()

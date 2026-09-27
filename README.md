@@ -60,6 +60,8 @@ tar -xzf GeminiSpeechAPI-linux.tar.gz
 
 That puts the app under `~/.local/share/GeminiSpeechAPI`, adds a desktop entry, and links `gemini-speech-api` into `~/.local/bin`. Uninstall with `~/.local/share/GeminiSpeechAPI/uninstall.sh`.
 
+On Wayland (CachyOS default), the listening dot follows the pointer on KDE and Hyprland. Paste goes back to the window you were typing in. The text is always copied. If the account cannot open `/dev/uinput` and `ydotool` / `wtype` are not installed, KDE asks once to allow input control.
+
 For a system-wide Arch / CachyOS package after the release asset exists:
 
 ```bash
