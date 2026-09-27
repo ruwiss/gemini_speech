@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+browser-cookies.txt
+logs/
+native-host.json
+build/
+dist/
+assets/icon.ico

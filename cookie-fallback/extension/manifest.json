@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini speech cookies",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApf8RPKqaglyy5ggcKx+fT7qc1peRWUPJaFtBTRNBSwUtX3E6hHKCDjvXRJah7o3b4KJ1TqUklVR4cNue26N99Ozia1gpzbZw9BKlw/2IVj0OHKL4mBL3iLBGENueeBEqMAC90dSV9BPqAvVFE8A1PtpwwMMxK7F6KadbyXjJ/ugsZYi9XNVWma3Y5x8M+PnxRpxchaczMce5MDRzvO2oPWRAcTz6Qs+GN9wyyffVZBBOknr8QZK5uKjG3bc8/SZEUNwrp4jqBXbfASDMx8MNG/3HmcyNDc+9w2R2+hx8atiiHTX9N2f4QZ9wZSBnf6XwM+iV9/Uxbp4JI25+YwVTxQIDAQAB",
+  "permissions": ["cookies", "alarms", "nativeMessaging"],
+  "host_permissions": ["*://*.google.com/*"],
+  "background": {"service_worker": "bg.js"}
+}
