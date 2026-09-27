@@ -5,6 +5,7 @@ RECORDING_TOO_LONG = "Live transcription stops at 10 minutes"
 NO_MICROPHONE = "No microphone"
 MICROPHONE_NOT_OPEN = "Microphone did not open"
 REQUEST_FAILED = "Transcription failed"
+SSL_FAILED = "SSL certificate failed — reinstall the Linux build"
 
 SHORTCUT_TITLE = "Shortcut"
 SHORTCUT_RESERVED = "Windows already uses %s."

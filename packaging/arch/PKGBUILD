@@ -2,7 +2,7 @@
 # CachyOS / Arch: download this file next to the release tarball, then:
 #   makepkg -si
 pkgname=gemini-speech-api-bin
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc="Tray dictation using Gemini 3.5 Transcribe Live"
 arch=('x86_64')

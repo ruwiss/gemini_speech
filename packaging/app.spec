@@ -2,20 +2,70 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 ICON = os.path.join(ROOT, "assets", "icon.ico")
 
-hiddenimports = ["PyQt6.QtMultimedia"]
-if sys.platform != "win32":
-    hiddenimports += collect_submodules("pynput")
+# pynput imports an X display at import time. Headless CI needs xvfb-run, and
+# Linux backends are listed explicitly so the freeze still picks them up.
+hiddenimports = ["PyQt6.QtMultimedia", "certifi"]
+if sys.platform.startswith("linux"):
+    hiddenimports += [
+        "pynput",
+        "pynput.keyboard",
+        "pynput.keyboard._base",
+        "pynput.keyboard._xorg",
+        "pynput.mouse",
+        "pynput.mouse._base",
+        "pynput.mouse._xorg",
+        "pynput._util",
+        "pynput._util.xorg",
+        "Xlib",
+        "Xlib.display",
+        "Xlib.X",
+        "Xlib.XK",
+        "Xlib.ext",
+        "Xlib.ext.xtest",
+        "Xlib.ext.record",
+        "Xlib.protocol",
+        "Xlib.protocol.event",
+        "Xlib.protocol.request",
+        "Xlib.protocol.rq",
+        "Xlib.support",
+        "Xlib.support.connect",
+        "Xlib.support.lock",
+        "Xlib.support.unix_connect",
+        "Xlib.threaded",
+        "Xlib.keysymdef",
+        "Xlib.keysymdef.miscellany",
+        "Xlib.keysymdef.latin1",
+        "Xlib.keysymdef.xkb",
+        "evdev",
+        "evdev.ecodes",
+        "six",
+    ]
+elif sys.platform == "darwin":
+    hiddenimports += [
+        "pynput",
+        "pynput.keyboard",
+        "pynput.keyboard._base",
+        "pynput.keyboard._darwin",
+        "pynput.mouse",
+        "pynput.mouse._base",
+        "pynput.mouse._darwin",
+        "pynput._util",
+        "pynput._util.darwin",
+    ]
+
+datas = [(os.path.join(ROOT, "assets"), "assets")]
+datas += collect_data_files("certifi")
 
 a = Analysis(
     [os.path.join(ROOT, "launch.py")],
     pathex=[ROOT],
     binaries=[],
-    datas=[(os.path.join(ROOT, "assets"), "assets")],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -129,7 +129,11 @@ class LiveSession:
                     self.error = messages.NO_SPEECH
         except Exception as exc:
             if not self._closing:
-                self.error = _redact(str(exc), self._key)[:80] or messages.REQUEST_FAILED
+                detail = _redact(str(exc), self._key)
+                if "CERTIFICATE_VERIFY_FAILED" in detail or "certificate verify failed" in detail.lower():
+                    self.error = messages.SSL_FAILED
+                else:
+                    self.error = detail[:80] or messages.REQUEST_FAILED
         finally:
             self._close()
             self.done.set()
@@ -319,9 +323,20 @@ class LiveSession:
             pass
 
 
+def _ssl_context():
+    cafile = os.environ.get("SSL_CERT_FILE") or ""
+    if cafile and os.path.isfile(cafile):
+        return ssl.create_default_context(cafile=cafile)
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def _connect(key):
     raw = socket.create_connection((HOST, 443), timeout=20)
-    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=HOST)
+    sock = _ssl_context().wrap_socket(raw, server_hostname=HOST)
     nonce = base64.b64encode(os.urandom(16)).decode("ascii")
     query = urllib.parse.urlencode({"key": key})
     request = (

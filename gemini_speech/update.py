@@ -1,11 +1,23 @@
 import ctypes
 import json
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+
+
+def _ssl_context():
+    cafile = os.environ.get("SSL_CERT_FILE") or ""
+    if cafile and os.path.isfile(cafile):
+        return ssl.create_default_context(cafile=cafile)
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 from . import __version__
 
@@ -35,7 +47,7 @@ def download():
         asset["url"],
         headers={"User-Agent": "GeminiSpeechAPI", "Accept": "application/octet-stream"},
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=120, context=_ssl_context()) as response:
         data = response.read()
     if sys.platform == "win32" and not data.startswith(b"MZ"):
         return ""
@@ -83,7 +95,7 @@ def launch(path):
 
 def _latest():
     request = urllib.request.Request(API, headers={"User-Agent": "GeminiSpeechAPI"})
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20, context=_ssl_context()) as response:
         body = json.loads(response.read().decode("utf-8"))
     assets = []
     for item in body.get("assets") or []:
