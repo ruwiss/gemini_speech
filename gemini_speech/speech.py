@@ -109,7 +109,7 @@ class LiveSession:
                     continue
                 if self._sent < MIN_PCM:
                     raise RuntimeError(messages.RECORDING_TOO_SHORT)
-                self._send_audio(b"\x00" * (RATE * WIDTH * 3 // 10))
+                self._send_audio(b"\x00" * (RATE * WIDTH * 12 // 100))
                 self._send({"realtimeInput": {"audioStreamEnd": True}})
                 self._collect_final()
                 break
@@ -165,24 +165,23 @@ class LiveSession:
         return " ".join(parts)
 
     def _collect_final(self):
-        # The interim already on screen was produced before the tail audio
-        # arrived. Returning it drops the last words.
-        baseline = self._interim
-        base_count = len(self._finals)
-        deadline = _now() + 1.0
-        current = baseline
-        changed_at = None
+        started = _now()
+        deadline = started + 0.45
+        last = self._text()
         while _now() < deadline and not self._closing:
-            self._drain(0.05)
-            if len(self._finals) > base_count:
-                self._drain(0.1)
-                return
-            if self._interim and self._interim != baseline:
-                if self._interim != current:
-                    current = self._interim
-                    changed_at = _now()
-                elif changed_at and _now() - changed_at >= 0.25:
-                    return
+            self._drain(0.04)
+            text = self._text()
+            if not text or text == last:
+                continue
+            last = text
+            extra = _now() + 0.12
+            while _now() < extra and _now() < deadline and not self._closing:
+                self._drain(0.04)
+                newer = self._text()
+                if newer != last:
+                    last = newer
+                    extra = _now() + 0.12
+            return
 
     def _drain(self, timeout):
         got = False
@@ -207,7 +206,11 @@ class LiveSession:
         if interim.get("text"):
             self._interim = interim["text"]
         if final.get("text"):
-            self._finals.append(final["text"])
+            text = final["text"].strip()
+            if self._finals and text.startswith(self._finals[-1].strip()):
+                self._finals[-1] = text
+            elif text:
+                self._finals.append(text)
             self._interim = ""
 
     def _setup_message(self):

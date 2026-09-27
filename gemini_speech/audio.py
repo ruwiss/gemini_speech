@@ -2,6 +2,9 @@ from PyQt6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
 
 from . import messages
 
+RATE = 16000
+WIDTH = 2
+
 
 class Recorder:
     def __init__(self):
@@ -20,6 +23,7 @@ class Recorder:
         if device.isNull():
             raise RuntimeError(messages.NO_MICROPHONE)
         self._source = QAudioSource(device, fmt)
+        self._source.setBufferSize(RATE * WIDTH // 25)
         self._io = self._source.start()
         if self._io is None:
             raise RuntimeError(messages.MICROPHONE_NOT_OPEN)
@@ -38,12 +42,18 @@ class Recorder:
             self.on_chunk(blob)
 
     def stop(self):
-        if self._io is not None:
-            self._read()
-            self._io = None
-        if self._source is not None:
-            self._source.stop()
-            self._source = None
+        source = self._source
+        io = self._io
+        self._source = None
+        self._io = None
+        if source is not None:
+            source.stop()
+        if io is not None:
+            data = bytes(io.readAll())
+            if data:
+                self._chunks.append(data)
+                if self.on_chunk is not None:
+                    self.on_chunk(data)
         pcm = b"".join(self._chunks)
         self._chunks = []
         return pcm

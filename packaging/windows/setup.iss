@@ -1,5 +1,5 @@
 #define AppName "GeminiSpeechAPI"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define SourceDir "..\..\dist\GeminiSpeechAPI"
 
 [Setup]
@@ -19,6 +19,8 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+CloseApplications=force
+RestartApplications=yes
 
 [Tasks]
 Name: startup; Description: "Start GeminiSpeechAPI when I sign in"

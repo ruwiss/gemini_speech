@@ -51,6 +51,8 @@ Publishing a GitHub release builds the installers and attaches only these files:
 
 The Windows setup is per user and can start with Windows. On Linux, unpack the archive and run `GeminiSpeechAPI/GeminiSpeechAPI`. On macOS, open the app from the disk image.
 
+The installed app checks GitHub a few seconds after it starts, and again every six hours. When a newer release is published, it downloads that installer and updates itself. A checkout started with `python -m gemini_speech` is left as it is.
+
 To build locally:
 
 ```bash

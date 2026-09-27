@@ -16,6 +16,19 @@ from .audio import Recorder
 from .settings import Settings
 
 
+class _Update(QThread):
+    ready = pyqtSignal(str)
+
+    def run(self):
+        try:
+            from . import update
+            path = update.download()
+        except Exception:
+            path = ""
+        if path:
+            self.ready.emit(path)
+
+
 class _Finish(QThread):
     text_ready = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -69,6 +82,7 @@ class GeminiSpeech(QObject):
         self._rewarm_at = 0.0
         self._stopping = False
         self._finish_token = 0
+        self._updating = False
         self._load()
         self.tray = QSystemTrayIcon(self._dot(False))
         QApplication.instance().setWindowIcon(QIcon(paths.ICON))
@@ -92,8 +106,34 @@ class GeminiSpeech(QObject):
         self.cancel_watch.start()
         self._sync_tip()
         self._ensure_warm()
+        QTimer.singleShot(4000, self._check_update)
+        self._update_timer = QTimer()
+        self._update_timer.setInterval(6 * 60 * 60 * 1000)
+        self._update_timer.timeout.connect(self._check_update)
+        self._update_timer.start()
         if not self.api_key:
             self.show_settings()
+
+    def _check_update(self):
+        if self._updating or self._quitting or self.recorder.active or self.busy:
+            return
+        self._updating = True
+        job = _Update()
+        job.ready.connect(self._apply_update, Qt.ConnectionType.QueuedConnection)
+        job.finished.connect(self._update_finished)
+        job.finished.connect(job.deleteLater)
+        self._update_job = job
+        job.start()
+
+    def _update_finished(self):
+        self._updating = False
+
+    def _apply_update(self, path):
+        if self._quitting or self.recorder.active or self.busy or not path:
+            return
+        self.tray.showMessage("GeminiSpeechAPI", "Updating to the latest version", QSystemTrayIcon.MessageIcon.Information, 3000)
+        from . import update
+        update.launch(path)
 
     def show_settings(self):
         self.keys.stop()
@@ -192,8 +232,7 @@ class GeminiSpeech(QObject):
         self.busy = True
         self._finish_token += 1
         token = self._finish_token
-        # The last syllable is still in the microphone buffer when the key is released.
-        QTimer.singleShot(250, lambda: self._finish_capture(token))
+        QTimer.singleShot(0, lambda: self._finish_capture(token))
 
     def _finish_capture(self, token):
         if token != self._finish_token or self._quitting:
