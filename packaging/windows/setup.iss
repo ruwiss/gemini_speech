@@ -1,5 +1,5 @@
 #define AppName "GeminiSpeechAPI"
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.6"
 #define SourceDir "..\..\dist\GeminiSpeechAPI"
 
 [Setup]

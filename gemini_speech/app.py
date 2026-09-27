@@ -51,17 +51,45 @@ def _qt_log(mode, _context, message):
     note("qt %s: %s" % (mode, message))
 
 
+_INSTANCE_HANDLE = None
+
+
+def _claim_single_instance():
+    global _INSTANCE_HANDLE
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.SetLastError(0)
+    _INSTANCE_HANDLE = kernel32.CreateMutexW(None, False, "Local\\GeminiSpeechAPI.single")
+    return kernel32.GetLastError() != 183
+
+
 def main():
     from PyQt6.QtCore import Qt, qInstallMessageHandler
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GeminiSpeech.GeminiSpeechAPI")
+    if not _claim_single_instance():
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "GeminiSpeechAPI is already running.",
+                "GeminiSpeechAPI",
+                0x40040,
+            )
+        return
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL)
     qInstallMessageHandler(_qt_log)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     GeminiSpeech().start()
-    sys.exit(app.exec())
+    app.exec()
+    os._exit(0)
 
 
 class GeminiSpeech(QObject):
@@ -339,13 +367,30 @@ class GeminiSpeech(QObject):
         self._overlay("error", message[:80])
 
     def quit(self):
+        if self._quitting:
+            return
         self._quitting = True
+        self.cancel_watch.stop()
+        timer = getattr(self, "_update_timer", None)
+        if timer is not None:
+            timer.stop()
+        self.indicator.dismiss()
+        self.settings.hide()
+        self.tray.hide()
         self.keys.stop()
         self._drop_recording()
-        if self._warm is not None:
-            self._warm.cancel()
-            self._warm = None
-        QApplication.quit()
+        warm = self._warm
+        self._warm = None
+        if warm is not None:
+            warm.cancel()
+        from .crashlog import note
+        note("quit")
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        # The tray and the hotkey thread otherwise keep this process alive,
+        # so the next launch finds the shortcuts still taken.
+        os._exit(0)
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

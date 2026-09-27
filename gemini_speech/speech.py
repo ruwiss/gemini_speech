@@ -39,6 +39,10 @@ class LiveSession:
         self.error = ""
         self._opened = 0.0
         self._end_seen = False
+        self._completed = False
+        self._translated = ""
+        self._heard_in = 0.0
+        self._heard_out = 0.0
         self.limit_hit = threading.Event()
         self.done = threading.Event()
 
@@ -72,8 +76,9 @@ class LiveSession:
     def cancel(self):
         self._closing = True
         self._queue.put(None)
+        self._close()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=2)
 
     def _run(self):
         try:
@@ -109,6 +114,9 @@ class LiveSession:
                     continue
                 if self._sent < MIN_PCM:
                     raise RuntimeError(messages.RECORDING_TOO_SHORT)
+                if self._language:
+                    self._collect_translation()
+                    break
                 self._send_audio(b"\x00" * (RATE * WIDTH * 12 // 100))
                 self._send({"realtimeInput": {"audioStreamEnd": True}})
                 self._collect_final()
@@ -158,6 +166,8 @@ class LiveSession:
         return bytes(blob)
 
     def _text(self):
+        if self._language:
+            return " ".join(self._translated.split())
         parts = [piece.strip() for piece in self._finals if piece and piece.strip()]
         interim = self._interim.strip()
         if interim:
@@ -165,28 +175,55 @@ class LiveSession:
         return " ".join(parts)
 
     def _collect_final(self):
+        # The server answers audioStreamEnd with generationComplete, usually
+        # 0.3-0.7s later. A pause before stopping can finish the turn early,
+        # so fall back to the text settling.
+        self._drain(0)
+        self._completed = False
         started = _now()
-        deadline = started + 0.55
-        baseline = self._text()
-        last = baseline
-        while _now() < deadline and not self._closing:
+        last = self._text()
+        changed = started
+        while _now() - started < 1.5 and not self._closing:
             self._drain(0.04)
-            if _now() - started < 0.2:
-                continue
+            if self._completed:
+                tail = _now() + 0.12
+                while _now() < tail and not self._closing:
+                    self._drain(0.04)
+                return
             text = self._text()
-            if text == last:
-                if text != baseline and _now() - started >= 0.28:
+            if text != last:
+                last = text
+                changed = _now()
+            if _now() - started >= 0.9 and _now() - changed >= 0.3:
+                return
+
+    def _collect_translation(self):
+        # The translate model leaves the last words untranslated until more
+        # audio streams past them in real time. audioStreamEnd does not flush
+        # it and no completion arrives, so pace silence until the text settles.
+        silence = b"\x00" * CHUNK
+        started = _now()
+        next_send = started
+        while not self._closing and not self.error:
+            now = _now()
+            if now - started >= 6.0:
+                return
+            if now >= next_send:
+                if self._sent + CHUNK > MAX_PCM:
+                    return
+                self._send_audio(silence)
+                next_send += CHUNK / float(RATE * WIDTH)
+            self._drain(max(0.0, min(0.05, next_send - _now())))
+            now = _now()
+            if not self._heard_in:
+                # A short phrase can take about 2s to get its first transcript.
+                if now - started >= 4.0:
                     return
                 continue
-            last = text
-            extra = _now() + 0.1
-            while _now() < extra and not self._closing:
-                self._drain(0.04)
-                newer = self._text()
-                if newer != last:
-                    last = newer
-                    extra = _now() + 0.1
-            return
+            quiet = now - max(self._heard_in, self._heard_out)
+            caught_up = self._heard_out >= self._heard_in
+            if now - started >= 1.2 and caught_up and quiet >= 1.0:
+                return
 
     def _drain(self, timeout):
         got = False
@@ -202,12 +239,19 @@ class LiveSession:
             self.error = _failure(message, self._key)
             return
         content = message.get("serverContent") or {}
+        if content.get("generationComplete") or content.get("turnComplete"):
+            self._completed = True
         if self._language:
-            interim = content.get("interimOutputTranscription") or {}
-            final = content.get("outputTranscription") or {}
-        else:
-            interim = content.get("interimInputTranscription") or {}
-            final = content.get("inputTranscription") or {}
+            # Translated text arrives as pieces, each with its own leading space.
+            if (content.get("inputTranscription") or {}).get("text"):
+                self._heard_in = _now()
+            piece = (content.get("outputTranscription") or {}).get("text")
+            if piece:
+                self._translated += piece
+                self._heard_out = _now()
+            return
+        interim = content.get("interimInputTranscription") or {}
+        final = content.get("inputTranscription") or {}
         if interim.get("text"):
             self._interim = interim["text"]
         if final.get("text"):
@@ -216,7 +260,8 @@ class LiveSession:
                 self._finals[-1] = text
             elif text:
                 self._finals.append(text)
-            self._interim = ""
+            # The final can stop short of the interim it replaces. Keep the rest.
+            self._interim = _remainder(self._interim, text)
 
     def _setup_message(self):
         if self._language:
@@ -258,6 +303,12 @@ class LiveSession:
         self._sock = None
         if sock is None:
             return
+        raw = getattr(sock, "sock", None)
+        if raw is not None:
+            try:
+                raw.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
         try:
             _send_frame(sock, 8, b"")
         except Exception:
@@ -401,6 +452,17 @@ def _failure(message, key):
     error = message.get("error") or {}
     text = error.get("message") or error.get("status") or messages.REQUEST_FAILED
     return _redact(str(text), key)[:80]
+
+
+def _remainder(interim, final):
+    words = interim.split()
+    done = final.split()
+    if len(words) <= len(done):
+        return ""
+    plain = lambda word: "".join(ch for ch in word.lower() if ch.isalnum())
+    if [plain(w) for w in words[:len(done)]] != [plain(w) for w in done]:
+        return ""
+    return " ".join(words[len(done):])
 
 
 def _redact(text, key):

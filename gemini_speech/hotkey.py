@@ -149,9 +149,15 @@ class Hotkey(QObject):
             self._listener = None
         if sys.platform == "win32" and self._thread_id:
             import ctypes
-            ctypes.windll.user32.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.PostThreadMessageW.argtypes = [
+                wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            ]
+            user32.PostThreadMessageW.restype = wintypes.BOOL
+            user32.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)
         if self._thread:
-            self._thread.join(timeout=1.2)
+            self._thread.join(timeout=2)
         self._thread = None
         self._thread_id = 0
 
@@ -160,6 +166,7 @@ class Hotkey(QObject):
         from ctypes import wintypes
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._thread_id = kernel32.GetCurrentThreadId()
         msg = wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
