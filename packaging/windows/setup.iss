@@ -1,5 +1,7 @@
 #define AppName "GeminiSpeechAPI"
-#define AppVersion "1.1.0"
+#ifndef AppVersion
+  #define AppVersion "1.1.0"
+#endif
 #define SourceDir "..\..\dist\GeminiSpeechAPI"
 
 [Setup]
@@ -34,3 +36,4 @@ Name: "{userstartup}\GeminiSpeechAPI"; Filename: "{app}\GeminiSpeechAPI.exe"; Ta
 
 [Run]
 Filename: "{app}\GeminiSpeechAPI.exe"; Description: "Launch GeminiSpeechAPI"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\GeminiSpeechAPI.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent

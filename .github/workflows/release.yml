@@ -31,6 +31,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Check version matches tag
+        shell: bash
+        run: |
+          app=$(python -c "import re;print(re.search(r'\"(.+?)\"', open('gemini_speech/__init__.py').read()).group(1))")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$app" != "$tag" ]; then
+            echo "gemini_speech/__init__.py is $app but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |

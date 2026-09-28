@@ -16,6 +16,11 @@ def png_to_ico(png_path, ico_path):
     open(ico_path, "wb").write(header + entry + data)
 
 
+def version():
+    text = open(os.path.join(ROOT, "gemini_speech", "__init__.py"), encoding="utf-8").read()
+    return text.split('"')[1]
+
+
 def run(cmd):
     print(" ".join(cmd))
     subprocess.check_call(cmd, cwd=ROOT)
@@ -55,7 +60,7 @@ def package_windows():
     iscc = _iscc()
     if not iscc:
         raise SystemExit("Inno Setup 6 was not found")
-    run([iscc, os.path.join(ROOT, "packaging", "windows", "setup.iss")])
+    run([iscc, "/DAppVersion=" + version(), os.path.join(ROOT, "packaging", "windows", "setup.iss")])
     print(os.path.join(DIST, "GeminiSpeechAPI-Setup.exe"))
 
 

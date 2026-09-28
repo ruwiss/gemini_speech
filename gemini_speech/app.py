@@ -18,16 +18,21 @@ from .settings import Settings
 
 
 class _Update(QThread):
-    ready = pyqtSignal(str)
+    found = pyqtSignal(str)
+    ready = pyqtSignal(str, str)
 
     def run(self):
+        from . import update
         try:
-            from . import update
-            path = update.download()
-        except Exception:
-            path = ""
-        if path:
-            self.ready.emit(path)
+            info = update.check()
+            if not info:
+                return
+            self.found.emit(info["version"])
+            path = update.download(info)
+        except Exception as exc:
+            update._log("failed: %s" % exc)
+            return
+        self.ready.emit(path, info["version"])
 
 
 class _Finish(QThread):
@@ -141,6 +146,8 @@ class GeminiSpeech(QObject):
         self._stopping = False
         self._finish_token = 0
         self._updating = False
+        self._update_job = None
+        self._pending_update = None
         self._load()
         self.tray = QSystemTrayIcon(self._dot(False))
         QApplication.instance().setWindowIcon(QIcon(paths.ICON))
@@ -180,21 +187,53 @@ class GeminiSpeech(QObject):
             return
         self._updating = True
         job = _Update()
-        job.ready.connect(self._apply_update, Qt.ConnectionType.QueuedConnection)
+        job.found.connect(self._update_found, Qt.ConnectionType.QueuedConnection)
+        job.ready.connect(self._update_ready, Qt.ConnectionType.QueuedConnection)
         job.finished.connect(self._update_finished)
         job.finished.connect(job.deleteLater)
         self._update_job = job
         job.start()
 
     def _update_finished(self):
-        self._updating = False
+        self._update_job = None
+        if not self._pending_update:
+            self._updating = False
 
-    def _apply_update(self, path):
-        if self._quitting or self.recorder.active or self.busy or not path:
+    def _update_found(self, version):
+        self.tray.showMessage("GeminiSpeechAPI", "Downloading version %s" % version, QSystemTrayIcon.MessageIcon.Information, 3000)
+
+    def _update_ready(self, path, version):
+        self._pending_update = (path, version)
+        self._install_update()
+
+    def _install_update(self):
+        pending = self._pending_update
+        if not pending or self._quitting:
             return
-        self.tray.showMessage("GeminiSpeechAPI", "Updating to the latest version", QSystemTrayIcon.MessageIcon.Information, 3000)
+        if self.recorder.active or self.busy or self._stopping or self.settings.isVisible():
+            QTimer.singleShot(5000, self._install_update)
+            return
+        path, version = pending
         from . import update
-        update.launch(path)
+        if sys.platform == "darwin":
+            self._pending_update = None
+            self._updating = False
+            self.tray.showMessage("GeminiSpeechAPI", "Version %s is ready to install" % version, QSystemTrayIcon.MessageIcon.Information, 5000)
+            update.launch(path)
+            return
+        self.tray.showMessage("GeminiSpeechAPI", "Installing version %s, the app will restart" % version, QSystemTrayIcon.MessageIcon.Information, 3000)
+        QTimer.singleShot(1500, lambda: self._run_installer(path))
+
+    def _run_installer(self, path):
+        from . import update
+        if self._quitting:
+            return
+        if update.launch(path):
+            self.quit()
+            return
+        self._pending_update = None
+        self._updating = False
+        self._overlay("error", "Update failed")
 
     def show_settings(self):
         self.keys.stop()
