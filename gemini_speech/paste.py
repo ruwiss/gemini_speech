@@ -12,8 +12,24 @@ def paste_text(text):
     if sys.platform.startswith("linux"):
         from . import desktop
         return desktop.paste(text)
-    QGuiApplication.clipboard().setText(text)
+    if not copy_text(text):
+        return False
     QTimer.singleShot(40, _press)
+    return True
+
+
+def copy_text(text):
+    """Clipboard only. Used when the keystroke paste did not land."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    if sys.platform.startswith("linux"):
+        from . import desktop
+        return desktop.copy_text(text)
+    try:
+        QGuiApplication.clipboard().setText(text)
+    except Exception:
+        return False
     return True
 
 

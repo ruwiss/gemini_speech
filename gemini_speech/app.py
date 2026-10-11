@@ -7,6 +7,7 @@ from PyQt6.QtGui import QAction, QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import desktop
+from . import dictionary
 from . import hotkey
 from . import indicator
 from . import messages
@@ -14,7 +15,7 @@ from . import paste
 from . import paths
 from . import speech
 from .audio import Recorder, level
-from .settings import Settings
+from .settings import Settings, system_language
 
 
 class _Update(QThread):
@@ -129,14 +130,23 @@ class GeminiSpeech(QObject):
         super().__init__()
         self.shortcut = "Alt+Z"
         self.translate = ""
-        self.language = "en"
+        self.language = system_language()
         self.cancel = "Esc"
         self.api_key = ""
+        self.dictionary = []
+        self.style = "toggle"
+        self.transcription = "smart"
+        self.microphone = ""
+        self._hold_shortcut = ""
+        self._hold_seen = False
+        self._hold_up = 0
+        self._unpasted = ""
+        self._recording_started = 0.0
         self.recorder = Recorder()
         self.indicator = indicator.Indicator()
         self.keys = hotkey.Hotkey()
         self.keys.failed.connect(self._fail)
-        self.settings = Settings(self.save_settings, self._settings_closed)
+        self.settings = Settings(self.save_settings, self._settings_closed, self.save_dictionary)
         self._quitting = False
         self.busy = False
         self._job = None
@@ -153,10 +163,14 @@ class GeminiSpeech(QObject):
         QApplication.instance().setWindowIcon(QIcon(paths.ICON))
         self.tray.setToolTip("GeminiSpeechAPI")
         self.menu = QMenu()
+        self._copy_action = QAction("Copy text", self.menu)
+        self._copy_action.setVisible(False)
+        self._copy_action.triggered.connect(self._copy_unpasted)
         settings = QAction("Settings", self.menu)
         settings.triggered.connect(self.show_settings)
         quit_ = QAction("Quit", self.menu)
         quit_.triggered.connect(self.quit)
+        self.menu.addAction(self._copy_action)
         self.menu.addAction(settings)
         self.menu.addAction(quit_)
         self.tray.setContextMenu(self.menu)
@@ -237,7 +251,10 @@ class GeminiSpeech(QObject):
 
     def show_settings(self):
         self.keys.stop()
-        self.settings.set_values(self.api_key, self.shortcut, self.translate, self.language, self.cancel)
+        self.settings.set_values(
+            self.api_key, self.shortcut, self.translate, self.language, self.cancel, self.dictionary,
+            self.style, self.transcription, self.microphone,
+        )
         self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()
@@ -257,12 +274,16 @@ class GeminiSpeech(QObject):
         else:
             self.keys.stop()
 
-    def save_settings(self, api_key, record, translate, language, cancel):
+    def save_settings(self, api_key, record, translate, language, cancel, dictionary_words, style, transcription, microphone):
         self.api_key = api_key.strip()
         self.shortcut = record
         self.translate = translate
-        self.language = language or "en"
+        self.language = language or system_language()
         self.cancel = cancel or "Esc"
+        self.dictionary = dictionary.normalize(dictionary_words)
+        self.style = style if style in ("hold", "toggle") else "toggle"
+        self.transcription = transcription if transcription in ("smart", "verbatim") else "smart"
+        self.microphone = microphone or ""
         self._store()
         self.settings.shortcut.owned = record
         self.settings.translate.owned = translate
@@ -271,33 +292,52 @@ class GeminiSpeech(QObject):
         self._sync_tip()
         self._ensure_warm()
 
+    def save_dictionary(self, pairs):
+        self.dictionary = dictionary.normalize(pairs)
+        self._store()
+
+    def _transcription_mode(self):
+        if self.transcription == "verbatim":
+            return "VERBATIM"
+        return "SMART"
+
+    def _warm_matches(self, warm):
+        return (
+            warm is not None
+            and warm.fresh()
+            and warm._key == self.api_key
+            and not warm._language
+            and warm._mode == self._transcription_mode()
+        )
+
     def _ensure_warm(self):
         if self._quitting or not self.api_key or self._live is not None:
             return
         warm = self._warm
-        if warm is not None and warm.fresh() and warm._key == self.api_key and not warm._language:
+        if self._warm_matches(warm):
             return
         if warm is not None:
             warm.cancel()
-        self._warm = speech.LiveSession(self.api_key)
+        self._warm = speech.LiveSession(self.api_key, mode=self._transcription_mode())
         self._warm.open()
 
     def _take_live(self):
         warm = self._warm
         self._warm = None
-        if warm is None or not warm.fresh():
+        if not self._warm_matches(warm):
             if warm is not None:
                 warm.cancel()
-            warm = speech.LiveSession(self.api_key)
+            warm = speech.LiveSession(self.api_key, mode=self._transcription_mode())
             warm.open()
         return warm
 
-    def toggle(self, mode="record"):
+    def toggle(self, mode="record", hold=False):
         from .crashlog import note
         if self.busy or self.settings.isVisible():
             note("toggle skipped")
             return
         if self.recorder.active:
+            self._clear_hold()
             self._finish()
             return
         if not self.api_key:
@@ -315,7 +355,11 @@ class GeminiSpeech(QObject):
                 self._live = self._take_live()
             self.recorder.on_chunk = self._live.push
             note("opening microphone")
-            self.recorder.start()
+            self.recorder.start(self.microphone)
+            self._recording_started = __import__("time").monotonic()
+            self._clear_hold()
+            if hold:
+                self._hold_shortcut = self.translate if mode == "translate" else self.shortcut
             note("microphone open")
             self._overlay("recording")
             note("indicator shown")
@@ -326,8 +370,52 @@ class GeminiSpeech(QObject):
         self._sync_tray()
         note("toggle returned")
 
+    def _clear_hold(self):
+        self._hold_shortcut = ""
+        self._hold_seen = False
+        self._hold_up = 0
+
+    def _watch_hold(self):
+        shortcut = self._hold_shortcut
+        if not shortcut or not self.recorder.active or self.busy or self._stopping:
+            return
+        if not self.keys.listening():
+            return
+        # One missed poll used to cut a hold. Wait until the keys have been up briefly.
+        if hotkey.held(shortcut):
+            self._hold_seen = True
+            self._hold_up = 0
+            return
+        self._hold_up += 1
+        released = (self._hold_seen and self._hold_up >= 2) or (not self._hold_seen and self._hold_up >= 3)
+        if released:
+            self._clear_hold()
+            self._finish()
+
+    def _refresh_preview(self):
+        # The overlay cannot be shown in the same turn as QAudioSource start.
+        # The first dot is deferred; text updates start on the next poll.
+        live = self._live
+        indicator = self.indicator
+        if live is None or not self.recorder.active or self.busy:
+            return
+        if indicator._state != "recording" or not indicator.isVisible():
+            return
+        indicator.show_recording(dictionary.apply(live.preview(), self.dictionary))
+
     def _finish(self):
         if self._stopping or self.busy:
+            return
+        self._clear_hold()
+        # A press that closes within two seconds is a misclick. Do not transcribe it.
+        started = self._recording_started
+        self._recording_started = 0.0
+        if started and __import__("time").monotonic() - started < 2.0:
+            self._drop_recording()
+            self.busy = False
+            self._sync_tray()
+            self._overlay("hide")
+            self._ensure_warm()
             return
         self._stopping = True
         self.busy = True
@@ -377,6 +465,8 @@ class GeminiSpeech(QObject):
     def _drop_recording(self):
         self._finish_token += 1
         self._stopping = False
+        self._recording_started = 0.0
+        self._clear_hold()
         self.recorder.on_chunk = None
         self.recorder.stop()
         live = self._live
@@ -386,13 +476,37 @@ class GeminiSpeech(QObject):
 
     def _pasted(self, text):
         self._ensure_warm()
+        text = dictionary.apply(text, self.dictionary)
         if not (text or "").strip():
             self._overlay("error", messages.NO_SPEECH)
         elif paste.paste_text(text):
+            self._unpasted = ""
+            self._copy_action.setVisible(False)
             self._overlay("done")
         else:
-            self._overlay("error", messages.PASTE_FAILED)
+            self._keep_unpasted(text)
         self.busy = False
+
+    def _keep_unpasted(self, text):
+        self._unpasted = text
+        self._copy_action.setVisible(True)
+        if not paste.copy_text(text):
+            self._overlay("error", messages.COPY_FAILED)
+            return
+        snippet = " ".join(text.split())
+        if len(snippet) > 90:
+            snippet = snippet[:89] + "…"
+        self._overlay("error", "%s — %s" % (messages.PASTE_FAILED, snippet))
+
+    def _copy_unpasted(self):
+        text = self._unpasted
+        if not text:
+            self._copy_action.setVisible(False)
+            return
+        if paste.copy_text(text):
+            self.tray.showMessage("GeminiSpeechAPI", "Copied", QSystemTrayIcon.MessageIcon.Information, 2000)
+        else:
+            self._overlay("error", messages.COPY_FAILED)
 
     def _transcribe_failed(self, message):
         self.busy = False
@@ -407,10 +521,13 @@ class GeminiSpeech(QObject):
             self._fail(error)
         action = self.keys.take()
         if action:
-            self.toggle(action)
-        if (self.recorder.active or self._stopping) and hotkey.held(self.cancel):
+            self.toggle(action, hold=self.style == "hold")
+        self._watch_hold()
+        self._refresh_preview()
+        if (self.recorder.active or self._stopping) and hotkey.held(self.cancel, exact=False):
             self._drop_recording()
             self.busy = False
+            self._clear_hold()
             self._sync_tray()
             self._overlay("hide")
             self._ensure_warm()
@@ -467,7 +584,7 @@ class GeminiSpeech(QObject):
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.toggle()
+            self.toggle(hold=False)
 
     def _load(self):
         path = paths.config_path()
@@ -487,6 +604,15 @@ class GeminiSpeech(QObject):
             self.cancel = data["cancel"]
         if data.get("api_key"):
             self.api_key = data["api_key"]
+        if isinstance(data.get("dictionary"), list):
+            self.dictionary = dictionary.normalize(data["dictionary"])
+        # A config from before this option has no style. Leave the press-to-toggle default.
+        if data.get("style") in ("hold", "toggle"):
+            self.style = data["style"]
+        if data.get("transcription") in ("smart", "verbatim"):
+            self.transcription = data["transcription"]
+        if data.get("microphone"):
+            self.microphone = data["microphone"]
 
     def _store(self):
         os.makedirs(os.path.dirname(paths.config_path()), exist_ok=True)
@@ -497,6 +623,10 @@ class GeminiSpeech(QObject):
                 "translate": self.translate,
                 "language": self.language,
                 "cancel": self.cancel,
+                "dictionary": dictionary.dump(self.dictionary),
+                "style": self.style,
+                "transcription": self.transcription,
+                "microphone": self.microphone,
             }, ensure_ascii=False)
         )
 

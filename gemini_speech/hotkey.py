@@ -3,6 +3,9 @@ import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+_LOCK = threading.Lock()
+_DOWN = set()
+
 from . import messages
 
 WIN_KEYS = {
@@ -45,9 +48,13 @@ def parse_windows(text):
     return mods, key
 
 
-def held(text):
-    if sys.platform != "win32":
-        return False
+def held(text, exact=True):
+    if sys.platform == "win32":
+        return _held_windows(text, exact)
+    return _held_keys(text)
+
+
+def _held_windows(text, exact=True):
     mods, key = parse_windows(text)
     if key is None:
         return False
@@ -60,9 +67,34 @@ def held(text):
     wanted = set(parts(text)) - set(keys)
     mapping = {"alt": 0x12, "ctrl": 0x11, "shift": 0x10, "meta": 0x5B}
     for name, code in mapping.items():
-        if down(code) != (name in wanted):
+        if exact and down(code) != (name in wanted):
+            return False
+        if not exact and name in wanted and not down(code):
             return False
     return True
+
+
+def _remember(key, down):
+    with _LOCK:
+        if down:
+            _DOWN.add(key)
+        else:
+            _DOWN.discard(key)
+
+
+def _clear_down():
+    with _LOCK:
+        _DOWN.clear()
+
+
+def _held_keys(text):
+    try:
+        from pynput.keyboard import HotKey
+        wanted = set(HotKey.parse(_pynput_hotkey(text)))
+    except Exception:
+        return False
+    with _LOCK:
+        return bool(wanted) and wanted <= _DOWN
 
 
 def same_shortcut(a, b):
@@ -102,6 +134,7 @@ class Hotkey(QObject):
         self._error = ""
         self._listener = None
         self._actions = {}
+        self._armed = False
 
     def take(self):
         fired = self._pending
@@ -112,6 +145,12 @@ class Hotkey(QObject):
         text = self._error
         self._error = ""
         return text
+
+    def listening(self):
+        # Windows reads the keys directly. Other systems need the listener's set.
+        if sys.platform == "win32":
+            return True
+        return self._listener is not None
 
     def _mark(self, action):
         self._pending = action
@@ -144,9 +183,11 @@ class Hotkey(QObject):
         return self._start_pynput(bindings)
 
     def stop(self):
+        self._armed = False
         if self._listener is not None:
             self._listener.stop()
             self._listener = None
+        _clear_down()
         if sys.platform == "win32" and self._thread_id:
             import ctypes
             from ctypes import wintypes
@@ -196,26 +237,61 @@ class Hotkey(QObject):
         except ImportError:
             self.failed.emit(messages.PYNPUT_MISSING)
             return False
-        mapping = {}
+        combos = []
         for _mods, _key, shortcut, action in bindings:
             key_name = [part for part in parts(shortcut) if part not in WIN_MODS]
             if len(key_name) != 1:
                 self.failed.emit(messages.SHORTCUT_UNREADABLE_NAMED % shortcut)
                 return False
-            mapping[_pynput_hotkey(shortcut)] = lambda action=action: self._mark(action)
-        self._listener = keyboard.GlobalHotKeys(mapping)
+            try:
+                parsed = set(keyboard.HotKey.parse(_pynput_hotkey(shortcut)))
+            except Exception:
+                self.failed.emit(messages.SHORTCUT_UNREADABLE_NAMED % shortcut)
+                return False
+            combos.append({"keys": parsed, "state": set(), "action": action, "down": False})
+
+        def on_press(key):
+            canon = self._listener.canonical(key)
+            _remember(canon, True)
+            if not self._armed:
+                return
+            for combo in combos:
+                if canon in combo["keys"] and canon not in combo["state"]:
+                    combo["state"].add(canon)
+                    if combo["state"] == combo["keys"] and not combo["down"]:
+                        combo["down"] = True
+                        self._mark(combo["action"])
+
+        def on_release(key):
+            canon = self._listener.canonical(key)
+            _remember(canon, False)
+            for combo in combos:
+                if canon in combo["state"]:
+                    combo["state"].discard(canon)
+                    if combo["state"] != combo["keys"]:
+                        combo["down"] = False
+
+        self._armed = True
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self._listener.start()
         self._thread = None
         return True
 
 
 def _pynput_hotkey(text):
-    names = {"ctrl": "<ctrl>", "alt": "<alt>", "shift": "<shift>", "meta": "<cmd>"}
+    names = {
+        "ctrl": "<ctrl>", "alt": "<alt>", "shift": "<shift>", "meta": "<cmd>",
+        "esc": "<esc>", "escape": "<esc>", "space": "<space>",
+    }
     bits = []
     key = ""
     for part in parts(text):
         if part in names:
             bits.append(names[part])
+        elif len(part) > 1 and part[0] == "f" and part[1:].isdigit():
+            key = "<%s>" % part
         else:
             key = part
-    return "+".join(bits + [key])
+    if key:
+        bits.append(key)
+    return "+".join(bits)

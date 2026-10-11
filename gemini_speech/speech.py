@@ -24,9 +24,11 @@ MIME = "audio/pcm;rate=16000"
 
 
 class LiveSession:
-    def __init__(self, api_key, language=""):
+    def __init__(self, api_key, language="", mode="SMART"):
         self._key = (api_key or "").strip()
         self._language = (language or "").strip()
+        self._mode = "VERBATIM" if str(mode).strip().upper() == "VERBATIM" else "SMART"
+        self._lock = threading.Lock()
         self._queue = queue.Queue()
         self._thread = None
         self._sock = None
@@ -72,6 +74,9 @@ class LiveSession:
         if self.error:
             raise RuntimeError(self.error)
         raise RuntimeError(messages.NO_SPEECH)
+
+    def preview(self):
+        return self._text()
 
     def cancel(self):
         self._closing = True
@@ -170,13 +175,14 @@ class LiveSession:
         return bytes(blob)
 
     def _text(self):
-        if self._language:
-            return " ".join(self._translated.split())
-        parts = [piece.strip() for piece in self._finals if piece and piece.strip()]
-        interim = self._interim.strip()
-        if interim:
-            parts.append(interim)
-        return " ".join(parts)
+        with self._lock:
+            if self._language:
+                return " ".join(self._translated.split())
+            parts = [piece.strip() for piece in self._finals if piece and piece.strip()]
+            interim = self._interim.strip()
+            if interim:
+                parts.append(interim)
+            return " ".join(parts)
 
     def _collect_final(self):
         # The server answers audioStreamEnd with generationComplete, usually
@@ -251,21 +257,23 @@ class LiveSession:
                 self._heard_in = _now()
             piece = (content.get("outputTranscription") or {}).get("text")
             if piece:
-                self._translated += piece
+                with self._lock:
+                    self._translated += piece
                 self._heard_out = _now()
             return
         interim = content.get("interimInputTranscription") or {}
         final = content.get("inputTranscription") or {}
-        if interim.get("text"):
-            self._interim = interim["text"]
-        if final.get("text"):
-            text = final["text"].strip()
-            if self._finals and text.startswith(self._finals[-1].strip()):
-                self._finals[-1] = text
-            elif text:
-                self._finals.append(text)
-            # The final can stop short of the interim it replaces. Keep the rest.
-            self._interim = _remainder(self._interim, text)
+        with self._lock:
+            if interim.get("text"):
+                self._interim = interim["text"]
+            if final.get("text"):
+                text = final["text"].strip()
+                if self._finals and text.startswith(self._finals[-1].strip()):
+                    self._finals[-1] = text
+                elif text:
+                    self._finals.append(text)
+                # The final can stop short of the interim it replaces. Keep the rest.
+                self._interim = _remainder(self._interim, text)
 
     def _setup_message(self):
         if self._language:
@@ -287,7 +295,7 @@ class LiveSession:
             "setup": {
                 "model": "models/gemini-3.5-transcribe-live",
                 "generationConfig": {"responseModalities": ["TEXT"]},
-                "inputAudioTranscription": {"mode": "SMART"},
+                "inputAudioTranscription": {"mode": self._mode},
             },
         }
 

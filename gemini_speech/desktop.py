@@ -14,6 +14,7 @@ _KWIN = False
 _HYPR = ""
 _FOCUS = ""
 _ADDR = ""
+_PLACED = None
 _UINPUT = None
 _BUS = None
 _PORTAL_READY = False
@@ -35,13 +36,13 @@ def start():
         return
     if wayland() and _kwin_load():
         _KWIN = True
-        note("overlay follow: kwin")
+        note("overlay anchor: kwin")
         return
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or ""
     if sig and _hypr_socket():
         _HYPR = sig
         _hypr_rules()
-        note("overlay follow: hyprland")
+        note("overlay anchor: hyprland")
 
 
 def stop():
@@ -62,8 +63,9 @@ def stop():
 
 
 def overlay_hidden():
-    global _ADDR
+    global _ADDR, _PLACED
     _ADDR = ""
+    _PLACED = None
 
 
 def follows():
@@ -71,22 +73,30 @@ def follows():
 
 
 def place(widget):
+    """Park the overlay on Hyprland. KDE does this from its own script."""
+    global _PLACED
     if _KWIN:
         return True
     if not _HYPR:
         return False
-    pos = _hypr_cursor()
-    if pos is None:
-        return False
     addr = _overlay_address()
     if not addr:
         return False
-    x = pos[0] + 8
-    y = pos[1] - widget.height() // 2
-    area = _hypr_area(pos)
-    if area is not None:
-        x = max(area[0], min(x, area[0] + area[2] - widget.width()))
-        y = max(area[1], min(y, area[1] + area[3] - widget.height()))
+    size = (widget.width(), widget.height())
+    if _PLACED is not None and _PLACED[0] == addr and _PLACED[1] == size:
+        return True
+    area = _hypr_work_area()
+    if area is None:
+        return False
+    scale = area[4]
+    width = max(1, int(round(size[0] * scale)))
+    height = max(1, int(round(size[1] * scale)))
+    gap = 24 if area[5] else 64
+    x = area[0] + max(0, (area[2] - width) // 2)
+    y = area[1] + area[3] - height - gap
+    x = max(area[0], min(x, area[0] + area[2] - width))
+    y = max(area[1], min(y, area[1] + area[3] - height))
+    _PLACED = (addr, size)
     _hypr("dispatch movewindowpixel exact %d %d,address:%s" % (x, y, addr))
     return True
 
@@ -101,6 +111,10 @@ def remember_focus():
     if OVERLAY_TITLE in title:
         return
     _FOCUS = (data or {}).get("address") or ""
+
+
+def copy_text(text):
+    return _copy(text)
 
 
 def paste(text):
@@ -285,22 +299,35 @@ function remember() {
     if (!ignored(active)) previous = active;
 }
 
+function areaFor(w) {
+    var work = 5;
+    try {
+        if (typeof KWin !== "undefined" && KWin.WorkArea !== undefined) work = KWin.WorkArea;
+    } catch (e) {}
+    try {
+        var area = workspace.clientArea(work, w);
+        if (area && area.width > 0 && area.height > 0) return area;
+    } catch (e2) {}
+    try {
+        var screen = w.output || workspace.activeScreen;
+        if (screen && screen.geometry) return screen.geometry;
+    } catch (e3) {}
+    return null;
+}
+
 function place() {
     try {
         remember();
-        var pos = workspace.cursorPos;
         var list = windows();
         for (var i = 0; i < list.length; i++) {
             var w = list[i];
             if (!ours(w) || w.deleted) continue;
-            var x = Math.round(pos.x + 8);
-            var y = Math.round(pos.y - w.height / 2);
-            var screen = workspace.screenAt(pos);
-            if (screen) {
-                var g = screen.geometry;
-                x = Math.max(g.x, Math.min(x, g.x + g.width - w.width));
-                y = Math.max(g.y, Math.min(y, g.y + g.height - w.height));
-            }
+            var g = areaFor(w);
+            if (!g) continue;
+            var x = Math.round(g.x + Math.max(0, (g.width - w.width) / 2));
+            var y = Math.round(g.y + g.height - w.height - 24);
+            x = Math.max(g.x, Math.min(x, g.x + g.width - w.width));
+            y = Math.max(g.y, Math.min(y, g.y + g.height - w.height));
             if (!placed) {
                 w.keepAbove = true;
                 w.skipTaskbar = true;
@@ -332,11 +359,18 @@ function onActivated(w) {
 }
 
 remember();
-workspace.cursorPosChanged.connect(place);
 workspace.windowActivated.connect(onActivated);
 workspace.windowAdded.connect(function(w) {
-    if (ours(w)) place();
+    if (!ours(w)) return;
+    try { w.frameGeometryChanged.connect(place); } catch (e) {}
+    place();
 });
+try {
+    var clock = new QTimer();
+    clock.interval = 200;
+    clock.timeout.connect(place);
+    clock.start();
+} catch (e) {}
 place();
 """ % (json.dumps(OVERLAY_TITLE), os.getpid())
 
@@ -405,24 +439,47 @@ def _hypr_cursor():
         return None
 
 
-_AREAS = None
+def _reserved(mon):
+    raw = mon.get("reserved")
+    if isinstance(raw, dict):
+        return (
+            int(raw.get("left") or 0),
+            int(raw.get("top") or 0),
+            int(raw.get("right") or 0),
+            int(raw.get("bottom") or 0),
+        )
+    if isinstance(raw, (list, tuple)) and len(raw) >= 4:
+        # hyprctl prints left, top, right, bottom.
+        return int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3])
+    return 0, 0, 0, 0
 
 
-def _hypr_area(pos):
-    global _AREAS
-    if _AREAS is None:
-        data = _hypr_json("monitors") or []
-        areas = []
-        for mon in data:
-            try:
-                areas.append((int(mon["x"]), int(mon["y"]), int(mon["width"]), int(mon["height"])))
-            except (KeyError, TypeError, ValueError):
-                continue
-        _AREAS = areas
-    for area in _AREAS:
-        if area[0] <= pos[0] < area[0] + area[2] and area[1] <= pos[1] < area[1] + area[3]:
-            return area
-    return _AREAS[0] if _AREAS else None
+def _hypr_work_area():
+    """Monitor work box: x, y, width, height, scale, panels already reserved."""
+    pos = _hypr_cursor()
+    data = _hypr_json("monitors") or []
+    chosen = None
+    for mon in data:
+        try:
+            x, y = int(mon["x"]), int(mon["y"])
+            width, height = int(mon["width"]), int(mon["height"])
+            scale = float(mon.get("scale") or 1) or 1.0
+        except (KeyError, TypeError, ValueError):
+            continue
+        left, top, right, bottom = _reserved(mon)
+        box = (
+            x + left,
+            y + top,
+            max(1, width - left - right),
+            max(1, height - top - bottom),
+            scale,
+            any((left, top, right, bottom)),
+        )
+        if pos and x <= pos[0] < x + width and y <= pos[1] < y + height:
+            return box
+        if chosen is None or mon.get("focused"):
+            chosen = box
+    return chosen
 
 
 def _overlay_address():

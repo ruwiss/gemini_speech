@@ -1,6 +1,7 @@
 import math
+import sys
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QPointF
 from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics
 from PyQt6.QtWidgets import QWidget, QApplication
 
@@ -18,15 +19,22 @@ BG = QColor(22, 24, 29, 230)
 class Indicator(QWidget):
     def __init__(self):
         super().__init__(None)
+        # Windows can chase the pointer. macOS hides a tool window while the
+        # tray app is inactive, and Wayland will not let a client park a window
+        # on the cursor, so those two keep a bar on the screen instead.
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.WindowTransparentForInput
         )
-        if not desktop.wayland():
+        if sys.platform == "win32":
+            flags |= Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput
+        elif sys.platform == "darwin":
             flags |= Qt.WindowType.Tool
+        elif not desktop.wayland():
+            flags |= Qt.WindowType.Tool | Qt.WindowType.BypassWindowManagerHint
         self.setWindowFlags(flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWindowTitle(desktop.OVERLAY_TITLE)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -38,14 +46,33 @@ class Indicator(QWidget):
         self._phase = 0.0
         self._area = None
         self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
         self._hide = QTimer(self)
         self._hide.setSingleShot(True)
         self._hide.timeout.connect(self.dismiss)
 
-    def show_recording(self):
-        self._show("recording", "", ICON, ICON)
+    def show_recording(self, text=""):
+        text = " ".join((text or "").split())
+        if len(text) > 240:
+            text = "…" + text[-239:]
+        if text == self._message and self._state == "recording" and self.isVisible():
+            return
+        if not text:
+            self._show("recording", "", ICON, ICON)
+            return
+        font = self._caption_font()
+        metrics = QFontMetrics(font)
+        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
+        bounds = metrics.boundingRect(QRect(0, 0, 360, 160), flags, text)
+        width = min(420, max(160, bounds.width() + 40))
+        height = min(96, max(28, bounds.height() + 12))
+        self._show("recording", text, width, height)
+
+    def _caption_font(self):
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        return font
 
     def show_busy(self):
         self._show("busy", "", ICON, ICON)
@@ -74,6 +101,7 @@ class Indicator(QWidget):
         self._place()
         if not self.isVisible():
             self.show()
+        self._timer.setInterval(33)
         if not self._timer.isActive():
             self._timer.start()
         self._hide.stop()
@@ -82,11 +110,17 @@ class Indicator(QWidget):
         self.update()
 
     def _place(self):
+        if sys.platform != "win32":
+            self._anchor()
+            return
         if desktop.place(self):
             return
         pos = QCursor.pos()
         x = pos.x() + GAP
-        y = pos.y() - self.height() // 2
+        if self._state == "recording" and self._message:
+            y = pos.y() - self.height() - GAP
+        else:
+            y = pos.y() - self.height() // 2
         area = self._area
         if area is None or not area.contains(pos):
             screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
@@ -99,11 +133,29 @@ class Indicator(QWidget):
         if self.pos() != point:
             self.move(point)
 
+    def _anchor(self):
+        if desktop.place(self):
+            return
+        pos = QCursor.pos()
+        screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
+        area = screen.availableGeometry() if screen else None
+        if area is None:
+            return
+        # X11 and macOS already shrink this rect around the panel and the Dock.
+        # Other Wayland compositors usually do not, so leave room for a bar.
+        margin = 24 if sys.platform == "darwin" or not desktop.wayland() else 64
+        x = area.left() + max(0, (area.width() - self.width()) // 2)
+        y = area.bottom() - self.height() - margin + 1
+        x = max(area.left(), min(x, area.right() - self.width() + 1))
+        y = max(area.top(), min(y, area.bottom() - self.height() + 1))
+        point = QPointF(x, y).toPoint()
+        if self.pos() != point:
+            self.move(point)
+
     def _tick(self):
-        self._phase += 0.18
-        before = self.pos()
+        self._phase += 0.36
         self._place()
-        if self.pos() != before or self._state in ("recording", "busy"):
+        if self._state in ("recording", "busy"):
             self.update()
 
     def paintEvent(self, _event):
@@ -116,15 +168,20 @@ class Indicator(QWidget):
             path = QPainterPath()
             path.addRoundedRect(rect, 8, 8)
             painter.fillPath(path, BG)
-            painter.setPen(QPen(ERR, 1))
+            border = QColor(60, 66, 80) if self._state == "recording" else ERR
+            painter.setPen(QPen(border, 1))
             painter.drawPath(path)
         self._draw(painter)
         if self._message:
-            painter.setPen(ERR)
-            painter.setFont(QFont(self.font()))
+            preview = self._state == "recording"
+            painter.setPen(QColor(231, 233, 238) if preview else ERR)
+            painter.setFont(self._caption_font() if preview else QFont(self.font()))
+            flags = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            if preview:
+                flags |= Qt.TextFlag.TextWordWrap
             painter.drawText(
-                QRectF(22, 0, self.width() - 26, self.height()),
-                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                QRectF(28 if preview else 22, 0, self.width() - (34 if preview else 26), self.height()),
+                int(flags),
                 self._message,
             )
 

@@ -1,6 +1,7 @@
 API_KEY_MISSING = "Add a Gemini API key in Settings"
 NO_SPEECH = "No speech detected"
 PASTE_FAILED = "Copied. Could not paste"
+COPY_FAILED = "Could not copy"
 RECORDING_TOO_SHORT = "Recording is too short"
 RECORDING_TOO_LONG = "Live transcription stops at 10 minutes"
 NO_MICROPHONE = "No microphone"
