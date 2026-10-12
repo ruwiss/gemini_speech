@@ -1,19 +1,54 @@
+import difflib
 import math
 import sys
+import time
 
-from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QPointF
-from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtGui import (
+    QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics, QFontMetricsF,
+    QLinearGradient,
+)
 from PyQt6.QtWidgets import QWidget, QApplication
 
 from . import desktop
 
 ICON = 28
 GAP = 8
+LINE = 36
+PAD_X = 30
+PAD_R = 14
+WORD_GAP = 5
+MAX_LINE = 347
+ENTER = 0.22
+CORRECT = 0.18
+WIDTH_TAU = 0.12
+INK = QColor(236, 238, 242)
 REC = QColor(240, 78, 82)
 OK = QColor(80, 205, 140)
 ERR = QColor(240, 100, 90)
 BUSY = QColor(120, 170, 255)
 BG = QColor(22, 24, 29, 230)
+
+
+def _smooth(amount):
+    amount = max(0.0, min(1.0, amount))
+    return amount * amount * (3.0 - 2.0 * amount)
+
+
+class _CaptionWord:
+    def __init__(self, text):
+        self.text = text
+        self.outgoing = ""
+        self.opacity = 0.0
+        self.out_opacity = 0.0
+        self.width = 0.0
+        self.target_width = 0.0
+        self.x = 0.0
+        self.y = 2.6
+        self.fade = 0.0
+        self.fading = True
+        self.retiring = False
+        self.fade_for = ENTER
 
 
 class Indicator(QWidget):
@@ -45,6 +80,13 @@ class Indicator(QWidget):
         self._message = ""
         self._phase = 0.0
         self._area = None
+        self._words = []
+        self._line = ""
+        self._dropped = 0
+        self._scroll = 0.0
+        self._scroll_target = 0.0
+        self._content = 0.0
+        self._anim_at = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
@@ -54,24 +96,40 @@ class Indicator(QWidget):
 
     def show_recording(self, text=""):
         text = " ".join((text or "").split())
-        if len(text) > 240:
-            text = "…" + text[-239:]
-        if text == self._message and self._state == "recording" and self.isVisible():
+        active = self._state == "recording" and self.isVisible()
+        if active and text == self._line:
             return
-        if not text:
+        if self._state != "recording":
+            self._words = []
+            self._dropped = 0
+            self._scroll = 0.0
+            self._scroll_target = 0.0
+            self._content = 0.0
+            self._anim_at = 0.0
+        self._line = text
+        self._state = "recording"
+        self._message = text
+        self._sync_words(text)
+        self._animate(0.0)
+        if not text and not self._words:
             self._show("recording", "", ICON, ICON)
             return
-        font = self._caption_font()
-        metrics = QFontMetrics(font)
-        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
-        bounds = metrics.boundingRect(QRect(0, 0, 360, 160), flags, text)
-        width = min(420, max(160, bounds.width() + 40))
-        height = min(96, max(28, bounds.height() + 12))
-        self._show("recording", text, width, height)
+        if not active:
+            self._place()
+            if not self.isVisible():
+                self.show()
+            self._timer.setInterval(33)
+            if not self._timer.isActive():
+                self._timer.start()
+            self._hide.stop()
+        else:
+            self._place()
+        self.update()
 
     def _caption_font(self):
         font = QFont(self.font())
-        font.setPixelSize(13)
+        font.setPixelSize(14)
+        font.setWeight(QFont.Weight.Medium)
         return font
 
     def show_busy(self):
@@ -91,12 +149,24 @@ class Indicator(QWidget):
         self._timer.stop()
         self._hide.stop()
         self._state = ""
+        self._words = []
+        self._line = ""
+        self._dropped = 0
+        self._scroll = 0.0
+        self._scroll_target = 0.0
         self.hide()
         desktop.overlay_hidden()
 
     def _show(self, state, message, width, height, msec=0):
         self._state = state
         self._message = message
+        if state != "recording":
+            self._words = []
+            self._line = ""
+            self._dropped = 0
+            self._scroll = 0.0
+            self._scroll_target = 0.0
+            self._content = 0.0
         self.resize(width, height)
         self._place()
         if not self.isVisible():
@@ -153,40 +223,293 @@ class Indicator(QWidget):
             self.move(point)
 
     def _tick(self):
+        now = time.monotonic()
+        dt = 0.033 if not self._anim_at else min(0.05, max(0.0, now - self._anim_at))
+        self._anim_at = now
         self._phase += 0.36
+        if self._state == "recording":
+            self._animate(dt)
         self._place()
         if self._state in ("recording", "busy"):
             self.update()
+
+    def _measure(self, text):
+        if not text:
+            return 0.0
+        return float(QFontMetricsF(self._caption_font()).horizontalAdvance(text))
+
+    def _move(self, current, target, dt, tau):
+        if dt <= 0.0:
+            return current
+        if abs(target - current) <= 0.2:
+            return target
+        rate = 1.0 - math.exp(-dt / tau)
+        nxt = current + (target - current) * rate
+        if abs(target - nxt) <= 0.2:
+            return target
+        return nxt
+
+    def _sync_words(self, text):
+        fresh = text.split() if text else []
+        if self._dropped > len(fresh):
+            self._dropped = 0
+            self._words = [word for word in self._words if word.retiring]
+        fresh = fresh[self._dropped:]
+        live = [word for word in self._words if not word.retiring]
+        old = [word.text for word in live]
+        if old == fresh:
+            return
+        anchors = {}
+        for index, word in enumerate(self._words):
+            if word.retiring:
+                anchors[word] = next((item for item in self._words[index + 1:] if not item.retiring), None)
+        matcher = difflib.SequenceMatcher(a=old, b=fresh, autojunk=False)
+        rebuilt = []
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                rebuilt.extend(live[i1:i2])
+            elif tag == "insert":
+                rebuilt.extend(self._make_word(token) for token in fresh[j1:j2])
+            elif tag == "delete":
+                for word in live[i1:i2]:
+                    word.retiring = True
+                    rebuilt.append(word)
+            else:
+                shared = min(i2 - i1, j2 - j1)
+                for offset in range(shared):
+                    word = live[i1 + offset]
+                    self._retarget(word, fresh[j1 + offset])
+                    rebuilt.append(word)
+                for word in live[i1 + shared:i2]:
+                    word.retiring = True
+                    rebuilt.append(word)
+                rebuilt.extend(self._make_word(token) for token in fresh[j1 + shared:j2])
+        for word, nxt in anchors.items():
+            if word in rebuilt:
+                continue
+            if nxt is not None and nxt in rebuilt:
+                rebuilt.insert(rebuilt.index(nxt), word)
+            else:
+                rebuilt.append(word)
+        self._words = rebuilt
+
+    def _make_word(self, text):
+        word = _CaptionWord(text)
+        word.target_width = self._measure(text)
+        return word
+
+    def _retarget(self, word, text):
+        if word.text == text:
+            return
+        previous = word.text
+        old_fold = previous.casefold()
+        new_fold = text.casefold()
+        word.target_width = self._measure(text)
+        # A growing or shrinking hypothesis ("hel" -> "hello") stays in place.
+        # A real rewrite crossfades so the surrounding words only slide.
+        if new_fold.startswith(old_fold) or old_fold.startswith(new_fold):
+            word.text = text
+            return
+        word.outgoing = previous
+        word.out_opacity = 1.0
+        word.text = text
+        word.opacity = 0.0
+        word.fade = 0.0
+        word.fading = True
+        word.fade_for = CORRECT
+        word.y = 0.0
+
+    def _snap_tail(self):
+        # New words at the end take their real width immediately and fade in.
+        # The line scrolls toward them, so a long utterance glides instead of
+        # jumping or revealing letter by letter.
+        for word in reversed(self._words):
+            if word.retiring:
+                continue
+            if not (word.fading and not word.outgoing):
+                break
+            word.width = word.target_width
+
+    def _layout(self):
+        total = 0.0
+        previous = False
+        for word in self._words:
+            if word.width > 0.25 and previous:
+                total += WORD_GAP
+            word.x = total
+            total += word.width if word.width > 0.0 else 0.0
+            if word.width > 0.25:
+                previous = True
+        self._content = total
+
+    def _max_width(self):
+        cap = MAX_LINE
+        area = self._area
+        if area is not None:
+            cap = min(cap, max(220, area.width() - 32))
+        return float(cap)
+
+    def _animate(self, dt):
+        self._words = [
+            word for word in self._words
+            if not (
+                word.retiring
+                and word.width <= 0.4
+                and word.opacity <= 0.04
+                and word.out_opacity <= 0.04
+            )
+        ]
+        for word in self._words:
+            if word.retiring:
+                word.target_width = 0.0
+                word.opacity = self._move(word.opacity, 0.0, dt, 0.09)
+                word.out_opacity = self._move(word.out_opacity, 0.0, dt, 0.09)
+                word.y = self._move(word.y, 1.5, dt, 0.1)
+            else:
+                word.target_width = self._measure(word.text)
+                if word.fading:
+                    word.fade += dt
+                    word.opacity = _smooth(word.fade / word.fade_for) if dt > 0.0 else word.opacity
+                    if word.outgoing:
+                        word.out_opacity = 1.0 - word.opacity
+                        word.y = 0.0
+                    else:
+                        word.y = 2.6 * (1.0 - word.opacity)
+                    if word.opacity >= 0.999:
+                        word.fading = False
+                        word.opacity = 1.0
+                        word.out_opacity = 0.0
+                        word.outgoing = ""
+                        word.y = 0.0
+                else:
+                    word.opacity = 1.0
+                    word.out_opacity = 0.0
+                    word.y = 0.0
+            if word.fading and not word.outgoing and not word.retiring:
+                width_tau = 0.08
+            elif word.outgoing or word.retiring:
+                width_tau = 0.16
+            else:
+                width_tau = WIDTH_TAU
+            word.width = self._move(word.width, word.target_width, dt, width_tau)
+        self._snap_tail()
+        self._layout()
+        self._fit_line()
+        self._scroll_target = max(0.0, self._content - self._view())
+        if self._scroll_target < 1.0:
+            self._scroll_target = 0.0
+            self._scroll = 0.0
+        elif dt > 0.0:
+            nudged = self._move(self._scroll, self._scroll_target, dt, 0.16)
+            # Keep a burst of words from throwing the line faster than the eye follows.
+            cap = 22.0 * (dt / 0.033)
+            delta = nudged - self._scroll
+            if abs(delta) > cap:
+                nudged = self._scroll + (cap if delta > 0.0 else -cap)
+            self._scroll = nudged
+        self._prune()
+
+    def _view(self):
+        return max(1.0, float(self.width()) - PAD_X - PAD_R)
+
+    def _fit_line(self):
+        if self._words or self._line:
+            width = min(self._max_width(), max(float(ICON), PAD_X + self._content + PAD_R))
+            height = float(LINE)
+        else:
+            width = float(ICON)
+            height = float(ICON)
+        fitted_w = max(ICON, int(round(width)))
+        fitted_h = max(ICON, int(round(height)))
+        if self.width() != fitted_w or self.height() != fitted_h:
+            self.resize(fitted_w, fitted_h)
+
+    def _prune(self):
+        changed = False
+        lag = self._scroll_target - self._scroll
+        while self._words:
+            word = self._words[0]
+            live = sum(1 for item in self._words if not item.retiring)
+            settled = (
+                not word.retiring
+                and not word.fading
+                and not word.outgoing
+                and abs(word.width - word.target_width) < 0.6
+            )
+            offscreen = word.x + word.width < self._scroll - 24
+            if not (settled and offscreen and live > 24):
+                break
+            self._words.pop(0)
+            self._dropped += 1
+            changed = True
+        if changed:
+            self._layout()
+            self._fit_line()
+            self._scroll_target = max(0.0, self._content - self._view())
+            self._scroll = min(self._scroll_target, max(0.0, self._scroll_target - lag))
+
+    def _paint_line(self, painter):
+        font = self._caption_font()
+        metrics = QFontMetrics(font)
+        painter.setFont(font)
+        baseline = (self.height() + metrics.ascent() - metrics.descent()) / 2.0
+        view = QRectF(PAD_X, 1, max(0.0, self.width() - PAD_X - PAD_R), max(1.0, self.height() - 2))
+        painter.save()
+        painter.setClipRect(view)
+        for word in self._words:
+            if word.width <= 0.3 and word.out_opacity <= 0.02:
+                continue
+            x = PAD_X + word.x - self._scroll
+            if x > view.right() + 4 or x + word.width < view.left() - 8:
+                continue
+            clip = QRectF(x, 0.0, max(word.width, 0.0), float(self.height()))
+            painter.save()
+            painter.setClipRect(clip, Qt.ClipOperation.IntersectClip)
+            if word.outgoing and word.out_opacity > 0.02:
+                painter.setOpacity(max(0.0, min(1.0, word.out_opacity)))
+                painter.setPen(INK)
+                painter.drawText(QPointF(x, baseline + word.y), word.outgoing)
+            if word.text and word.opacity > 0.02:
+                painter.setOpacity(max(0.0, min(1.0, word.opacity)))
+                painter.setPen(INK)
+                painter.drawText(QPointF(x, baseline + word.y), word.text)
+            painter.restore()
+        painter.restore()
+        if self._scroll > 1.5:
+            fade = QLinearGradient(PAD_X, 0, PAD_X + 26, 0)
+            fade.setColorAt(0.0, BG)
+            fade.setColorAt(1.0, QColor(BG.red(), BG.green(), BG.blue(), 0))
+            painter.fillRect(QRectF(PAD_X, 1, 26, max(1, self.height() - 2)), fade)
 
     def paintEvent(self, _event):
         if not self._state:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._message:
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        caption = self._state == "recording" and bool(self._words or self._line)
+        if caption or self._message:
             rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
             path = QPainterPath()
-            path.addRoundedRect(rect, 8, 8)
+            path.addRoundedRect(rect, 9, 9)
             painter.fillPath(path, BG)
             border = QColor(60, 66, 80) if self._state == "recording" else ERR
             painter.setPen(QPen(border, 1))
             painter.drawPath(path)
         self._draw(painter)
-        if self._message:
-            preview = self._state == "recording"
-            painter.setPen(QColor(231, 233, 238) if preview else ERR)
-            painter.setFont(self._caption_font() if preview else QFont(self.font()))
-            flags = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-            if preview:
-                flags |= Qt.TextFlag.TextWordWrap
+        if caption:
+            self._paint_line(painter)
+        elif self._message:
+            painter.setPen(ERR)
+            painter.setFont(QFont(self.font()))
             painter.drawText(
-                QRectF(28 if preview else 22, 0, self.width() - (34 if preview else 26), self.height()),
-                int(flags),
+                QRectF(22, 0, self.width() - 26, self.height()),
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
                 self._message,
             )
 
     def _draw(self, painter):
-        cx = 14.0 if self._message else self.width() / 2
+        cx = 14.0 if (self._message or self._words) else self.width() / 2
         cy = self.height() / 2
         if self._state == "recording":
             pulse = 0.72 + 0.28 * (0.5 + 0.5 * math.sin(self._phase * 1.6))
