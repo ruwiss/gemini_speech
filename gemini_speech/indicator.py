@@ -5,8 +5,8 @@ import time
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import (
-    QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics, QFontMetricsF,
-    QLinearGradient,
+    QColor, QCursor, QFont, QImage, QPainter, QPainterPath, QPen, QFontMetrics,
+    QFontMetricsF, QLinearGradient,
 )
 from PyQt6.QtWidgets import QWidget, QApplication
 
@@ -19,9 +19,15 @@ PAD_X = 30
 PAD_R = 14
 WORD_GAP = 5
 MAX_LINE = 347
-ENTER = 0.22
-CORRECT = 0.18
+CORRECT = 0.30
 WIDTH_TAU = 0.12
+RETIRE_TAU = 0.14
+SCROLL_TAU = 0.20
+INK_W = 14.0
+INK_V_MAX = 420.0
+INK_V_CATCH = 700.0
+INK_CATCH_AT = 240.0
+FEATHER = 18.0
 INK = QColor(236, 238, 242)
 REC = QColor(240, 78, 82)
 OK = QColor(80, 205, 140)
@@ -39,16 +45,18 @@ class _CaptionWord:
     def __init__(self, text):
         self.text = text
         self.outgoing = ""
-        self.opacity = 0.0
+        self.opacity = 1.0
         self.out_opacity = 0.0
         self.width = 0.0
         self.target_width = 0.0
+        self.gap = 0.0
         self.x = 0.0
-        self.y = 2.6
+        self.y = 0.0
         self.fade = 0.0
-        self.fading = True
+        self.fading = False
+        self.opening = False
         self.retiring = False
-        self.fade_for = ENTER
+        self.fade_for = CORRECT
 
 
 class Indicator(QWidget):
@@ -87,6 +95,8 @@ class Indicator(QWidget):
         self._scroll_target = 0.0
         self._content = 0.0
         self._anim_at = 0.0
+        self._ink_v = 0.0
+        self._line_image = None
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
@@ -106,6 +116,7 @@ class Indicator(QWidget):
             self._scroll_target = 0.0
             self._content = 0.0
             self._anim_at = 0.0
+            self._ink_v = 0.0
         self._line = text
         self._state = "recording"
         self._message = text
@@ -118,11 +129,12 @@ class Indicator(QWidget):
             self._place()
             if not self.isVisible():
                 self.show()
-            self._timer.setInterval(33)
+            self._sync_clock()
             if not self._timer.isActive():
                 self._timer.start()
             self._hide.stop()
         else:
+            self._sync_clock()
             self._place()
         self.update()
 
@@ -154,6 +166,7 @@ class Indicator(QWidget):
         self._dropped = 0
         self._scroll = 0.0
         self._scroll_target = 0.0
+        self._ink_v = 0.0
         self.hide()
         desktop.overlay_hidden()
 
@@ -167,11 +180,12 @@ class Indicator(QWidget):
             self._scroll = 0.0
             self._scroll_target = 0.0
             self._content = 0.0
+            self._ink_v = 0.0
         self.resize(width, height)
         self._place()
         if not self.isVisible():
             self.show()
-        self._timer.setInterval(33)
+        self._sync_clock()
         if not self._timer.isActive():
             self._timer.start()
         self._hide.stop()
@@ -224,14 +238,34 @@ class Indicator(QWidget):
 
     def _tick(self):
         now = time.monotonic()
-        dt = 0.033 if not self._anim_at else min(0.05, max(0.0, now - self._anim_at))
+        if not self._anim_at:
+            dt = self._timer.interval() / 1000.0
+        else:
+            dt = min(0.05, max(0.0, now - self._anim_at))
         self._anim_at = now
-        self._phase += 0.36
+        # 0.36 per 33 ms keeps the record dot at the same speed when the clock is 16 ms.
+        self._phase += 0.36 * (dt / 0.033) if dt else 0.0
         if self._state == "recording":
             self._animate(dt)
+        self._sync_clock()
         self._place()
         if self._state in ("recording", "busy"):
             self.update()
+
+    def _moving(self):
+        if abs(self._scroll - self._scroll_target) > 0.5:
+            return True
+        for word in self._words:
+            if word.opening or word.retiring or word.fading or word.outgoing:
+                return True
+            if abs(word.width - word.target_width) > 0.6:
+                return True
+        return False
+
+    def _sync_clock(self):
+        want = 16 if self._state == "recording" and self._moving() else 33
+        if self._timer.interval() != want:
+            self._timer.setInterval(want)
 
     def _measure(self, text):
         if not text:
@@ -273,6 +307,7 @@ class Indicator(QWidget):
             elif tag == "delete":
                 for word in live[i1:i2]:
                     word.retiring = True
+                    word.opening = False
                     rebuilt.append(word)
             else:
                 shared = min(i2 - i1, j2 - j1)
@@ -282,6 +317,7 @@ class Indicator(QWidget):
                     rebuilt.append(word)
                 for word in live[i1 + shared:i2]:
                     word.retiring = True
+                    word.opening = False
                     rebuilt.append(word)
                 rebuilt.extend(self._make_word(token) for token in fresh[j1 + shared:j2])
         for word, nxt in anchors.items():
@@ -296,6 +332,12 @@ class Indicator(QWidget):
     def _make_word(self, text):
         word = _CaptionWord(text)
         word.target_width = self._measure(text)
+        word.opacity = 1.0
+        word.y = 0.0
+        word.width = 0.0
+        word.gap = 0.0
+        word.opening = True
+        word.fading = False
         return word
 
     def _retarget(self, word, text):
@@ -306,9 +348,15 @@ class Indicator(QWidget):
         new_fold = text.casefold()
         word.target_width = self._measure(text)
         # A growing or shrinking hypothesis ("hel" -> "hello") stays in place.
-        # A real rewrite crossfades so the surrounding words only slide.
+        # The extra letters join the ink instead of replacing the word.
         if new_fold.startswith(old_fold) or old_fold.startswith(new_fold):
             word.text = text
+            word.opacity = 1.0
+            word.out_opacity = 0.0
+            word.outgoing = ""
+            word.fading = False
+            word.y = 0.0
+            word.opening = word.width < word.target_width - 0.4
             return
         word.outgoing = previous
         word.out_opacity = 1.0
@@ -316,31 +364,85 @@ class Indicator(QWidget):
         word.opacity = 0.0
         word.fade = 0.0
         word.fading = True
+        word.opening = False
         word.fade_for = CORRECT
         word.y = 0.0
-
-    def _snap_tail(self):
-        # New words at the end take their real width immediately and fade in.
-        # The line scrolls toward them, so a long utterance glides instead of
-        # jumping or revealing letter by letter.
-        for word in reversed(self._words):
-            if word.retiring:
-                continue
-            if not (word.fading and not word.outgoing):
-                break
-            word.width = word.target_width
 
     def _layout(self):
         total = 0.0
         previous = False
         for word in self._words:
-            if word.width > 0.25 and previous:
-                total += WORD_GAP
+            if previous and word.gap > 0.0:
+                total += word.gap
             word.x = total
             total += word.width if word.width > 0.0 else 0.0
-            if word.width > 0.25:
+            if word.width > 0.25 or word.gap > 0.25:
                 previous = True
         self._content = total
+
+    def _gap_target(self, index):
+        for earlier in self._words[:index]:
+            if earlier.retiring and earlier.width <= 0.2 and earlier.gap <= 0.2:
+                continue
+            return float(WORD_GAP)
+        return 0.0
+
+    def _advance_ink(self, dt):
+        # One critically damped edge feeds every unfinished word from the left.
+        hidden = 0.0
+        pending = []
+        for index, word in enumerate(self._words):
+            if not word.opening or word.retiring:
+                continue
+            gap_target = self._gap_target(index)
+            if word.gap > gap_target:
+                word.gap = gap_target
+            gap_room = gap_target - word.gap
+            width_room = word.target_width - word.width
+            if gap_room <= 0.2 and width_room <= 0.4:
+                word.gap = gap_target
+                word.width = word.target_width
+                word.opening = False
+                continue
+            if gap_room > 0.0:
+                hidden += gap_room
+            if width_room > 0.0:
+                hidden += width_room
+            pending.append((word, gap_target))
+        if hidden <= 0.0:
+            self._ink_v = 0.0
+            return
+        if dt <= 0.0:
+            return
+        omega = INK_W
+        accel = omega * omega * hidden - 2.0 * omega * self._ink_v
+        self._ink_v += accel * dt
+        vmax = INK_V_CATCH if hidden > INK_CATCH_AT else INK_V_MAX
+        if self._ink_v > vmax:
+            self._ink_v = vmax
+        elif self._ink_v < 0.0:
+            self._ink_v = 0.0
+        budget = self._ink_v * dt
+        if budget >= hidden:
+            budget = hidden
+            self._ink_v = 0.0
+        for word, gap_target in pending:
+            if budget <= 0.0:
+                break
+            gap_room = gap_target - word.gap
+            if gap_room > 0.0:
+                take = gap_room if gap_room < budget else budget
+                word.gap += take
+                budget -= take
+            width_room = word.target_width - word.width
+            if budget > 0.0 and width_room > 0.0:
+                take = width_room if width_room < budget else budget
+                word.width += take
+                budget -= take
+            if word.gap >= gap_target - 0.2 and word.width >= word.target_width - 0.4:
+                word.gap = gap_target
+                word.width = word.target_width
+                word.opening = False
 
     def _max_width(self):
         cap = MAX_LINE
@@ -355,44 +457,43 @@ class Indicator(QWidget):
             if not (
                 word.retiring
                 and word.width <= 0.4
+                and word.gap <= 0.4
                 and word.opacity <= 0.04
                 and word.out_opacity <= 0.04
             )
         ]
         for word in self._words:
             if word.retiring:
+                word.opening = False
                 word.target_width = 0.0
-                word.opacity = self._move(word.opacity, 0.0, dt, 0.09)
-                word.out_opacity = self._move(word.out_opacity, 0.0, dt, 0.09)
-                word.y = self._move(word.y, 1.5, dt, 0.1)
-            else:
-                word.target_width = self._measure(word.text)
-                if word.fading:
-                    word.fade += dt
-                    word.opacity = _smooth(word.fade / word.fade_for) if dt > 0.0 else word.opacity
-                    if word.outgoing:
-                        word.out_opacity = 1.0 - word.opacity
-                        word.y = 0.0
-                    else:
-                        word.y = 2.6 * (1.0 - word.opacity)
-                    if word.opacity >= 0.999:
-                        word.fading = False
-                        word.opacity = 1.0
-                        word.out_opacity = 0.0
-                        word.outgoing = ""
-                        word.y = 0.0
-                else:
+                word.opacity = self._move(word.opacity, 0.0, dt, RETIRE_TAU)
+                word.out_opacity = self._move(word.out_opacity, 0.0, dt, RETIRE_TAU)
+                word.y = 0.0
+                word.gap = self._move(word.gap, 0.0, dt, RETIRE_TAU)
+                word.width = self._move(word.width, 0.0, dt, RETIRE_TAU)
+                continue
+            word.target_width = self._measure(word.text)
+            if word.fading and word.outgoing:
+                word.fade += dt
+                word.opacity = _smooth(word.fade / word.fade_for) if dt > 0.0 else word.opacity
+                word.out_opacity = 1.0 - word.opacity
+                word.y = 0.0
+                if word.opacity >= 0.999:
+                    word.fading = False
                     word.opacity = 1.0
                     word.out_opacity = 0.0
+                    word.outgoing = ""
                     word.y = 0.0
-            if word.fading and not word.outgoing and not word.retiring:
-                width_tau = 0.08
-            elif word.outgoing or word.retiring:
-                width_tau = 0.16
             else:
-                width_tau = WIDTH_TAU
-            word.width = self._move(word.width, word.target_width, dt, width_tau)
-        self._snap_tail()
+                word.fading = False
+                word.opacity = 1.0
+                word.out_opacity = 0.0
+                word.y = 0.0
+            if word.opening:
+                continue
+            tau = RETIRE_TAU if word.outgoing else WIDTH_TAU
+            word.width = self._move(word.width, word.target_width, dt, tau)
+        self._advance_ink(dt)
         self._layout()
         self._fit_line()
         self._scroll_target = max(0.0, self._content - self._view())
@@ -400,13 +501,7 @@ class Indicator(QWidget):
             self._scroll_target = 0.0
             self._scroll = 0.0
         elif dt > 0.0:
-            nudged = self._move(self._scroll, self._scroll_target, dt, 0.16)
-            # Keep a burst of words from throwing the line faster than the eye follows.
-            cap = 22.0 * (dt / 0.033)
-            delta = nudged - self._scroll
-            if abs(delta) > cap:
-                nudged = self._scroll + (cap if delta > 0.0 else -cap)
-            self._scroll = nudged
+            self._scroll = self._move(self._scroll, self._scroll_target, dt, SCROLL_TAU)
         self._prune()
 
     def _view(self):
@@ -434,6 +529,7 @@ class Indicator(QWidget):
                 not word.retiring
                 and not word.fading
                 and not word.outgoing
+                and not word.opening
                 and abs(word.width - word.target_width) < 0.6
             )
             offscreen = word.x + word.width < self._scroll - 24
@@ -448,33 +544,90 @@ class Indicator(QWidget):
             self._scroll_target = max(0.0, self._content - self._view())
             self._scroll = min(self._scroll_target, max(0.0, self._scroll_target - lag))
 
+    def _line_buffer(self, width, height):
+        ratio = self.devicePixelRatioF() or 1.0
+        logical_w = max(1, int(math.ceil(width)))
+        logical_h = max(1, int(math.ceil(height)))
+        physical_w = max(1, int(math.ceil(logical_w * ratio - 1e-6)))
+        physical_h = max(1, int(math.ceil(logical_h * ratio - 1e-6)))
+        image = self._line_image
+        ratio_now = image.devicePixelRatio() if image is not None else 0.0
+        if (
+            image is None
+            or image.width() != physical_w
+            or image.height() != physical_h
+            or abs(ratio_now - ratio) > 0.01
+        ):
+            image = QImage(physical_w, physical_h, QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(ratio)
+            self._line_image = image
+        image.fill(0)
+        return image
+
+    def _feather(self, painter, origin_x, height):
+        word = None
+        for item in self._words:
+            if (
+                item.opening
+                and not item.retiring
+                and item.width > 0.5
+                and item.width < item.target_width - 0.4
+            ):
+                word = item
+                break
+        if word is None:
+            return
+        left = PAD_X + word.x - self._scroll - origin_x
+        edge = left + word.width
+        band_left = max(left, edge - FEATHER)
+        if edge <= band_left:
+            return
+        gradient = QLinearGradient(band_left, 0, edge, 0)
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 255))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(gradient)
+        painter.drawRect(QRectF(band_left, 0.0, edge - band_left, height))
+        painter.restore()
+
     def _paint_line(self, painter):
         font = self._caption_font()
         metrics = QFontMetrics(font)
-        painter.setFont(font)
         baseline = (self.height() + metrics.ascent() - metrics.descent()) / 2.0
         view = QRectF(PAD_X, 1, max(0.0, self.width() - PAD_X - PAD_R), max(1.0, self.height() - 2))
-        painter.save()
-        painter.setClipRect(view)
-        for word in self._words:
-            if word.width <= 0.3 and word.out_opacity <= 0.02:
-                continue
-            x = PAD_X + word.x - self._scroll
-            if x > view.right() + 4 or x + word.width < view.left() - 8:
-                continue
-            clip = QRectF(x, 0.0, max(word.width, 0.0), float(self.height()))
-            painter.save()
-            painter.setClipRect(clip, Qt.ClipOperation.IntersectClip)
-            if word.outgoing and word.out_opacity > 0.02:
-                painter.setOpacity(max(0.0, min(1.0, word.out_opacity)))
-                painter.setPen(INK)
-                painter.drawText(QPointF(x, baseline + word.y), word.outgoing)
-            if word.text and word.opacity > 0.02:
-                painter.setOpacity(max(0.0, min(1.0, word.opacity)))
-                painter.setPen(INK)
-                painter.drawText(QPointF(x, baseline + word.y), word.text)
-            painter.restore()
-        painter.restore()
+        if view.width() >= 1.0 and view.height() >= 1.0:
+            image = self._line_buffer(view.width(), view.height())
+            line = QPainter(image)
+            try:
+                line.setRenderHint(QPainter.RenderHint.Antialiasing)
+                line.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                line.setFont(font)
+                origin_x = view.left()
+                origin_y = view.top()
+                for word in self._words:
+                    if word.width <= 0.3 and word.out_opacity <= 0.02:
+                        continue
+                    x = PAD_X + word.x - self._scroll - origin_x
+                    if x > view.width() + 4 or x + word.width < -8:
+                        continue
+                    clip = QRectF(x, 0.0, max(word.width, 0.0), view.height())
+                    line.save()
+                    line.setClipRect(clip)
+                    if word.outgoing and word.out_opacity > 0.02:
+                        line.setOpacity(max(0.0, min(1.0, word.out_opacity)))
+                        line.setPen(INK)
+                        line.drawText(QPointF(x, baseline - origin_y + word.y), word.outgoing)
+                    if word.text and word.opacity > 0.02:
+                        line.setOpacity(max(0.0, min(1.0, word.opacity)))
+                        line.setPen(INK)
+                        line.drawText(QPointF(x, baseline - origin_y + word.y), word.text)
+                    line.restore()
+                self._feather(line, origin_x, view.height())
+            finally:
+                line.end()
+            painter.drawImage(view.topLeft(), image)
         if self._scroll > 1.5:
             fade = QLinearGradient(PAD_X, 0, PAD_X + 26, 0)
             fade.setColorAt(0.0, BG)
