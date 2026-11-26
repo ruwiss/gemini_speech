@@ -3,7 +3,7 @@ import os
 import sys
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QColor
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import desktop
@@ -15,7 +15,7 @@ from . import paste
 from . import paths
 from . import speech
 from .audio import Recorder, level
-from .settings import Settings, system_language
+from .settings import DEFAULT_LANGUAGE, TRANSCRIPTION_MODES, Settings
 
 
 class _Update(QThread):
@@ -129,8 +129,8 @@ class GeminiSpeech(QObject):
     def __init__(self):
         super().__init__()
         self.shortcut = "Alt+Z"
-        self.translate = ""
-        self.language = system_language()
+        self.translate = "Alt+X"
+        self.language = DEFAULT_LANGUAGE
         self.cancel = "Esc"
         self.api_key = ""
         self.dictionary = []
@@ -172,6 +172,17 @@ class GeminiSpeech(QObject):
         quit_.triggered.connect(self.quit)
         self.menu.addAction(self._copy_action)
         self.menu.addAction(settings)
+        transcript_menu = self.menu.addMenu("Transcript")
+        transcript_group = QActionGroup(transcript_menu)
+        self._transcript_actions = {}
+        for label, mode in TRANSCRIPTION_MODES:
+            action = transcript_menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(mode)
+            transcript_group.addAction(action)
+            self._transcript_actions[mode] = action
+        self._transcript_actions[self.transcription].setChecked(True)
+        transcript_group.triggered.connect(self._select_transcription)
         self.menu.addAction(quit_)
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._activated)
@@ -278,11 +289,12 @@ class GeminiSpeech(QObject):
         self.api_key = api_key.strip()
         self.shortcut = record
         self.translate = translate
-        self.language = language or system_language()
+        self.language = language or DEFAULT_LANGUAGE
         self.cancel = cancel or "Esc"
         self.dictionary = dictionary.normalize(dictionary_words)
         self.style = style if style in ("hold", "toggle") else "toggle"
         self.transcription = transcription if transcription in ("smart", "verbatim") else "smart"
+        self._transcript_actions[self.transcription].setChecked(True)
         self.microphone = microphone or ""
         self._store()
         self.settings.shortcut.owned = record
@@ -290,6 +302,15 @@ class GeminiSpeech(QObject):
         self.settings.cancel.owned = cancel
         self._arm_shortcut()
         self._sync_tip()
+        self._ensure_warm()
+
+    def _select_transcription(self, action):
+        mode = action.data()
+        if mode == self.transcription:
+            return
+        self.transcription = mode
+        self.settings.set_transcription(mode)
+        self._store()
         self._ensure_warm()
 
     def save_dictionary(self, pairs):
@@ -598,6 +619,8 @@ class GeminiSpeech(QObject):
             self.shortcut = data.get("shortcut") or ""
         if "translate" in data:
             self.translate = data.get("translate") or ""
+        elif hotkey.same_shortcut(self.shortcut, self.translate):
+            self.translate = ""
         if data.get("language"):
             self.language = data["language"]
         if data.get("cancel"):

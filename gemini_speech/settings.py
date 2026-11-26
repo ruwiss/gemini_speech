@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, QLocale, QSize, QTimer, QUrl
+from PyQt6.QtCore import Qt, QSize, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -28,6 +28,7 @@ _STYLE = (
 )
 
 
+DEFAULT_LANGUAGE = "en"
 LANGUAGES = (
     ("English", "en"),
     ("Turkish", "tr"),
@@ -47,21 +48,10 @@ LANGUAGES = (
 )
 
 
-def system_language():
-    """Preferred language of this device, when the list has it. Otherwise English."""
-    known = {item[1] for item in LANGUAGES}
-    codes = []
-    for name in QLocale.system().uiLanguages():
-        code = name.replace("-", "_").split("_")[0].lower()
-        if code and code not in codes:
-            codes.append(code)
-    fallback = QLocale.system().name().replace("-", "_").split("_")[0].lower()
-    if fallback and fallback not in codes:
-        codes.append(fallback)
-    for code in codes:
-        if code in known:
-            return code
-    return "en"
+TRANSCRIPTION_MODES = (
+    ("Smart", "smart"),
+    ("Doğal", "verbatim"),
+)
 
 
 class VersionLink(QLabel):
@@ -295,8 +285,8 @@ class Settings(QDialog):
         for label, code in LANGUAGES:
             self.language.addItem(label, code)
         self.transcription = QComboBox()
-        self.transcription.addItem("Smart", "smart")
-        self.transcription.addItem("Verbatim", "verbatim")
+        for label, mode in TRANSCRIPTION_MODES:
+            self.transcription.addItem(label, mode)
         self.microphone = QComboBox()
         self.microphone.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.microphone.setMinimumContentsLength(18)
@@ -322,7 +312,7 @@ class Settings(QDialog):
         layout.addLayout(form)
         hint = QLabel(
             "Hold to talk records while the shortcut is down. Press to toggle starts and stops. "
-            "Smart drops filler words. Verbatim keeps every word."
+            "Smart drops filler words. Doğal keeps every word."
         )
         hint.setWordWrap(True)
         hint.setFixedWidth(396)
@@ -339,17 +329,20 @@ class Settings(QDialog):
         self.translate.setText(translate)
         self.cancel.setText(cancel)
         index = self.language.findData(language)
-        self.language.setCurrentIndex(index if index >= 0 else 0)
+        self.language.setCurrentIndex(index if index >= 0 else self.language.findData(DEFAULT_LANGUAGE))
         style_index = self.style.findData(style if style in ("hold", "toggle") else "toggle")
         self.style.setCurrentIndex(style_index if style_index >= 0 else 0)
-        transcript_index = self.transcription.findData(transcription if transcription in ("smart", "verbatim") else "smart")
-        self.transcription.setCurrentIndex(transcript_index if transcript_index >= 0 else 0)
+        self.set_transcription(transcription)
         self._microphone_id = microphone or ""
         self._fill_mics(self._microphone_id)
         self._pairs = dictionary.normalize(dictionary_words)
         self._refresh_dictionary_button()
         if self._dictionary_window is not None:
             self._dictionary_window.set_pairs(self._pairs)
+
+    def set_transcription(self, mode):
+        index = self.transcription.findData(mode)
+        self.transcription.setCurrentIndex(index if index >= 0 else 0)
 
     def showEvent(self, event):
         self._fill_mics(self.microphone.currentData() or self._microphone_id)
@@ -388,13 +381,11 @@ class Settings(QDialog):
         translate = self.translate.text().strip()
         cancel = self.cancel.text().strip() or "Esc"
         key = self.api_key.text().strip()
-        language = self.language.currentData() or system_language()
+        language = self.language.currentData() or DEFAULT_LANGUAGE
         style = self.style.currentData() or "toggle"
         if style not in ("hold", "toggle"):
             style = "toggle"
         transcription = self.transcription.currentData() or "smart"
-        if transcription not in ("smart", "verbatim"):
-            transcription = "smart"
         microphone = self.microphone.currentData() or ""
         if record and translate and hotkey.same_shortcut(record, translate):
             QMessageBox.warning(self, messages.SHORTCUT_TITLE, messages.SHORTCUT_SAME)

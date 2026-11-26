@@ -2,9 +2,9 @@
 
 Tray dictation for Windows, macOS, and Linux. Press a shortcut, speak, press it again, and the text is pasted where you were typing.
 
-The app calls the Gemini Developer API. Press `Alt+Z` to start and press it again to stop. The app writes what you said with `gemini-3.5-transcribe-live`. Settings can switch that to hold-to-talk. A second shortcut, set in Settings, translates that speech with `gemini-3.5-live-translate-preview` into the language you pick. That language starts as the language of the device. `Esc` cancels the recording. On Windows the words sit next to the pointer. On macOS and Linux they sit in a bar at the bottom center of the screen, above the Dock or panel. The tray icon records in the spoken language. Right-click it for Settings and Quit.
+The app calls the Gemini Developer API. Press `Alt+Z` to start and press it again to stop. The app writes what you said with `gemini-3.5-transcribe-live`. Settings can switch that to hold-to-talk. Press `Alt+X` to translate with `gemini-3.5-live-translate-preview` into English or the language you pick in Settings. `Esc` cancels the recording. On Windows the words sit next to the pointer. On macOS and Linux they sit in a bar at the bottom center of the screen, above the Dock or panel. The tray icon records in the spoken language. Right-click it for Settings, Transcript, and Quit.
 
-Smart transcription is the default. It removes filler words. Verbatim keeps every word, including fillers. Pick the microphone in Settings. A live session lasts up to 10 minutes. There is no browser cookie, extension, or ffmpeg in this path.
+Smart transcription is the default. It removes filler words. Doğal keeps every word, including fillers. Switch modes under **Transcript** in the tray menu or in Settings. Pick the microphone in Settings. A live session lasts up to 10 minutes. There is no browser cookie, extension, or ffmpeg in this path.
 
 If you would rather use a signed-in Google session and no API key, the older build is in [`cookie-fallback`](cookie-fallback).
 
@@ -35,13 +35,13 @@ The first window asks for the API key. Settings are stored here:
 | --- | --- |
 | Record | `Alt+Z`, press to start and stop |
 | Keys | Press to toggle. Hold is in Settings |
-| Translate | none, choose one in Settings |
-| Language | Device language |
-| Transcript | Smart. Verbatim is in Settings |
+| Translate | `Alt+X`, press to start and stop |
+| Language | English |
+| Transcript | Smart |
 | Microphone | System default |
 | Cancel | `Esc` |
 
-Translate pastes the speech in the language selected in Settings. On a new install that language is the device language. A language already saved by an older install stays as it is. Record and Translate cannot share one shortcut. The same press or hold choice applies to both. An older install with no Keys value uses press to toggle.
+Translate pastes the speech in the language selected in Settings. Upgrades keep saved languages, shortcuts, and transcript modes. Record and Translate cannot share one shortcut. The same press or hold choice applies to both. An older install with no Keys value uses press to toggle.
 
 Paste types the text into the window you were using. If that keystroke does not land, the text stays on the clipboard and **Copy text** appears in the tray menu. A successful paste leaves that item hidden.
 
